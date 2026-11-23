@@ -1,0 +1,19 @@
+name: darz
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  darz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: BargLabs/darz@852138aa046cfddadca6b256f6c877f4ee51ac83
+        with:
+          fail-on: never
