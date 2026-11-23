@@ -1,4 +1,4 @@
-name: Darz
+name: DARZ Agent Gate Check
 description: Read-only check of whether a repository's gate holds against AI coding agents. Writes a canonical record and SARIF.
 author: Barg Labs
 
