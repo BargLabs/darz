@@ -1,0 +1,4 @@
+# Gate files need a human owner.
+/.github/ @houman44
+/CODEOWNERS @houman44
+/package.json @houman44

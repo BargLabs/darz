@@ -1,0 +1,70 @@
+name: Darz
+description: Read-only check of whether a repository's gate holds against AI coding agents. Writes a canonical record and SARIF.
+author: Barg Labs
+
+inputs:
+  repository:
+    description: The repository to check, as owner/name.
+    required: false
+    default: ${{ github.repository }}
+  token:
+    description: >-
+      A token Darz reads with (GET requests only). The default workflow token cannot read classic branch
+      protection, ruleset bypass lists or collaborators, so those rows come out unverifiable. For a full
+      check, pass a token with Administration: read.
+    required: false
+    default: ${{ github.token }}
+  agents:
+    description: User logins agents work as, separated by commas or new lines.
+    required: false
+    default: ""
+  agent-apps:
+    description: GitHub Apps agents work as, each a slug or slug=id (give the id for a private App), separated by commas or new lines.
+    required: false
+    default: ""
+  gates:
+    description: Extra gate-file globs, separated by commas or new lines.
+    required: false
+    default: ""
+  merges:
+    description: How many merged pull requests check 6 reads.
+    required: false
+    default: "50"
+  out-dir:
+    description: Where the record and SARIF are written.
+    required: false
+    default: darz-out
+  api-url:
+    description: The GitHub API URL. No other host is called.
+    required: false
+    default: ${{ github.api_url }}
+  fail-on:
+    description: >-
+      fail (default) fails the step when a check fails; unverifiable also fails it when a row is
+      unverifiable; never only reports. An unreadable repository always fails the step.
+    required: false
+    default: fail
+
+outputs:
+  exit-code:
+    description: Darz's exit code (0 every check passed, 1 a check failed, 2 none failed but one is unverifiable, 3 the repository could not be read).
+  record:
+    description: Path of darz-record.json.
+  record-sha256:
+    description: SHA-256 of darz-record.json.
+  sarif:
+    description: Path of darz.sarif, for github/codeql-action/upload-sarif.
+  pass:
+    description: Number of checks that passed.
+  fail:
+    description: Number of checks that failed.
+  unverifiable:
+    description: Number of checks that were unverifiable.
+
+runs:
+  using: node24
+  main: dist/action.js
+
+branding:
+  icon: shield
+  color: gray-dark
