@@ -11,7 +11,7 @@ An agent has no gate if it can do any of these:
 
 Darz reads a repository's settings and files and reports `pass`, `fail` or `unverifiable` for each check, with the setting or file it read. It fails closed when it cannot decide, uses no AI model, and writes a record anyone can re-run.
 
-**Status: v0.2.0, early. GitHub only. Use the GitHub Action pinned to a release's full commit SHA, or install from source.**
+**Status: v0.3.0, early. GitHub only. Use the GitHub Action pinned to a release's full commit SHA, or install from source.**
 
 ## Install from source
 
