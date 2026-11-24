@@ -14,6 +14,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: BargLabs/darz@8951a33c2ddef9eae98888d2bdd9a1a827756e0e
+      - uses: BargLabs/darz@79fec26ff163f3519369a39dbbbf198fba339a75
         with:
           fail-on: never
