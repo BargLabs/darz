@@ -143,6 +143,94 @@ On a public repository you do not administer, expect checks 1 to 4 to be `unveri
 
 If no agent identity is declared or detected, checks 3, 4 and 6 are `unverifiable` with reason `no_agent_identities`, and so is check 5 when a required check is pinned to an app. They never pass on an empty set.
 
+## Use alongside other checks
+
+Darz asks one question: can a coding agent change, approve, bypass or report on the gate that reviews its own work? Other checks ask different questions. Run them side by side as independent signals; none of them answers Darz's question, and Darz does not answer theirs.
+
+| Tool | What it asks | Overlap with Darz |
+|---|---|---|
+| Darz | Can an agent identity own the gate files, approve its own change, bypass the rules, or report a required check? | — |
+| [OpenSSF Scorecard](https://github.com/ossf/scorecard) | How closely does the project follow supply-chain practices: branch protection, code review, token permissions, pinned dependencies, and more? | Branch protection and review. Scorecard scores the repository's settings as a whole. It does not know which accounts are agents, and its code-review check gives no score when every recent change was made by a bot. |
+| [zizmor](https://github.com/zizmorcore/zizmor) | Can a workflow be exploited: template injection, excessive permissions, dangerous triggers, unpinned actions? | None directly. A workflow flaw is a way around the gate that does not go through the merge rules, so it complements check 1. |
+| [OSV-Scanner](https://github.com/google/osv-scanner) | Do the dependencies have known vulnerabilities? | None. |
+
+Each tool writes SARIF. Give each upload its own `category`, so code scanning keeps their alerts apart. A sketch for the first three, each job with only the permissions it needs. Uploading SARIF needs `security-events: write`, and in a private repository also `actions: read`:
+
+```yaml
+name: gate and supply-chain checks
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions: {}
+
+jobs:
+  darz:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      security-events: write
+    steps:
+      - id: darz
+        uses: BargLabs/darz@<full commit SHA of a release>
+        with:
+          # Name the accounts your agents work as. Without them,
+          # checks 3, 4 and 6 are unverifiable, and the job still passes.
+          agent-apps: my-agent-app
+          token: ${{ secrets.DARZ_TOKEN }}
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+        if: always()
+        with:
+          sarif_file: ${{ steps.darz.outputs.sarif }}
+          category: darz
+
+  scorecard:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          # Optional: a token with Administration: read lets Scorecard read
+          # more of the branch protection. Without it, the workflow token is used.
+          # repo_token: ${{ secrets.SCORECARD_TOKEN }}
+      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
+
+  zizmor:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Uploads its own SARIF to code scanning by default.
+      - uses: zizmorcore/zizmor-action@45d7276c9ca790aabd705e31ca99c6185c3e76dd # v0.8.1
+        with:
+          version: 1.32.0
+```
+
+Like Darz, Scorecard reads more of the branch protection with a token that has Administration: read. To give it one, store the token as a secret, `SCORECARD_TOKEN` in the sketch, and uncomment `repo_token`. Where a setting cannot be read, Darz reports the row `unverifiable` rather than scoring it.
+
+A commit pin fixes an action's own files, not everything it runs. zizmor-action installs zizmor from hash-pinned lock files in its own tree; `version` names the release explicitly. scorecard-action is a Docker action, and at v2.5.0 it runs the image `ghcr.io/ossf/scorecard-action:v2.5.0` by tag, so the image can change under the same commit.
+
 ## Outputs
 
 Darz writes three files to `--out`:

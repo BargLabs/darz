@@ -7,8 +7,8 @@
 // GitHub showed a code-owner shield for that user on README.md and none on
 // probe/a.txt. So a line whose every owner is reported unknown still matches,
 // as the last match, and leaves the path with no code owner: GitHub does not
-// fall back to the earlier line. Other error kinds, and lines where only some
-// owners are flagged, are not verified and stay ambiguous.
+// fall back to the earlier line. The other error kinds, verified on 24 Nov,
+// are in codeowners-error-kinds.test.ts.
 
 import { describe, expect, it } from "vitest";
 import { ownersOf, parseCodeowners } from "../src/codeowners.js";
@@ -34,14 +34,14 @@ describe("an Unknown owner line whose every owner is flagged", () => {
     expect(ownersOf(f, "probe/a.txt").ambiguous).toBe(false);
   });
 
-  it("stays ambiguous when only some owners on the line are flagged (not verified)", () => {
-    const f = parseCodeowners("* @alice\n/probe/ @alice @ghost\n", [{ line: 2, column: 16, kind: "Unknown owner" }]);
-    expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: [], line: 2, ambiguous: true });
+  it("applies with the owners not flagged when only some owners on the line are flagged", () => {
+    const f = parseCodeowners("* @alice\n/probe/ @bob @ghost\n", [{ line: 2, column: 14, kind: "Unknown owner" }]);
+    expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: ["@bob"], line: 2, ambiguous: false });
   });
 
-  it("stays ambiguous for another error kind (not verified)", () => {
-    const f = parseCodeowners("* @alice\n/probe/ @ghost\n", [{ line: 2, column: 9, kind: "Invalid owner" }]);
-    expect(ownersOf(f, "probe/a.txt").ambiguous).toBe(true);
+  it("an Invalid owner line is skipped, so the earlier line applies", () => {
+    const f = parseCodeowners("* @alice\n/probe/ ghost\n", [{ line: 2, column: 9, kind: "Invalid owner" }]);
+    expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: ["@alice"], line: 1, ambiguous: false });
   });
 
   it("stays ambiguous when the error has no column", () => {

@@ -188,7 +188,7 @@ describe("check 1 judges the probe paths", () => {
     const fx = goodFixture();
     fx.codeowners = { ".github/CODEOWNERS": ok(fileBody(".github/CODEOWNERS", text)) };
     fx.codeownersErrors = ok({
-      errors: [{ line: 3, column: 26, kind: "Unknown owner", source: "/.github/actions/ @alice @ghost\n", path: ".github/CODEOWNERS" }],
+      errors: [{ line: 3, kind: "Unknown owner", source: "/.github/actions/ @alice @ghost\n", path: ".github/CODEOWNERS" }],
     });
     const r = row(await run(fx), "gate_files_owned");
     expect(r.status).toBe("unverifiable");

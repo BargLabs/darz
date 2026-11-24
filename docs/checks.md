@@ -127,10 +127,14 @@ Probe names start with `darz-probe-`. If a file with a probe's path exists in th
   - A pattern with no slash, or only a trailing one, matches at any depth.
   - A trailing `/` matches the contents of a directory.
   - A pattern whose last segment contains `*` matches files only. For example, `docs/*` does not own `docs/a/b.md`.
-- **Which line applies:** the last matching line wins. A line with a pattern and no owners leaves the path unowned.
+- **Which line applies:** the last matching line wins. A line with a pattern and no owners leaves the path unowned. A `!` negation line has no effect: GitHub does not support negation, and reports no error for it.
 - **Lines GitHub reports as errors:** Darz reads `GET /repos/{owner}/{repo}/codeowners/errors` and reports each such line.
-  - **Every owner on the line is an unknown owner** (kind `Unknown owner`, with a `column` at each owner): GitHub still applies the line, and the paths it matches have no code owner. GitHub does not fall back to an earlier line. This was verified on 23 Nov in a scratch repository: a path matched last by such a line showed no code owner, while a path matched only by the earlier `* @owner` line showed one.
-  - **Any other case** is not verified: another error kind, a line where only some owners are flagged, or an error with no `column`. The path is `codeowners_error_ambiguous` if either reading could give it an owner: GitHub applies the line with the owners it did not flag (every owner, when an error has no `column`), or GitHub ignores the line and an earlier line owns the path. When both readings leave the path with no owner, it is unowned.
+  - GitHub's handling of each kind was verified on 23 and 24 Nov 2026 in a scratch repository. Three sources agreed wherever more than one was read: `codeowners/errors`, the line the file view says applies to a path, and the code-owner review GitHub requested on a pull request touching one path. `codeowners/errors` lists each flagged owner separately, with its own `column`.
+  - **`Unknown owner`** (an account that does not exist, or one without write access): GitHub applies the line with the owners it did not flag. When every owner is flagged, the paths it matches have no code owner; GitHub does not fall back to an earlier line. Darz uses this when every error on the line is `Unknown owner` with a `column` at an owner.
+  - **`Invalid owner`**, anywhere on the line, even beside a valid owner: GitHub skips the whole line, and an earlier line applies.
+  - **`Invalid pattern`:** the line matches nothing, and an earlier line applies.
+  - A line with an `Invalid owner` or `Invalid pattern` error is skipped when every error on it is one of these three kinds.
+  - **Any other case** is not verified: an error kind other than these three, an `Unknown owner` error with no `column` or with a `column` at no owner, or a line number with no kind. The path is `codeowners_error_ambiguous` if either reading could give it an owner: GitHub applies the line with the owners it did not flag (every owner, when an error has no `column`), or GitHub ignores the line and an earlier line owns the path. When both readings leave the path with no owner, it is unowned.
 - **Team and email owners** are reported as written. Their members are not read.
 
 ## 1. `gate_files_owned`
@@ -349,7 +353,7 @@ This check is context: it never passes or fails.
 | `tree_truncated` | unverifiable | 1, 3 | GitHub truncated the tree. |
 | `codeowners_unreadable` | unverifiable | 1, 3 | A CODEOWNERS file could not be read. |
 | `codeowners_errors_unreadable` | unverifiable | 1, 3 | `codeowners/errors` could not be read. |
-| `codeowners_error_ambiguous` | unverifiable | 1, 3 | A reported CODEOWNERS line, of a kind whose handling is not verified, is the last match, and either its unflagged owners or an earlier line could own the path. |
+| `codeowners_error_ambiguous` | unverifiable | 1, 3 | A reported CODEOWNERS line whose error is of a shape not verified (an unknown kind, or no `column` at an owner) is the last match, and either its unflagged owners or an earlier line could own the path. |
 | `gate_files_unowned` | fail | 1 | Gate files with no code owner. |
 | `new_gate_paths_unowned` | fail | 1 | Probe paths with no code owner: a CODEOWNERS location GitHub reads before the file in use, or a new file in a gate directory. |
 | `no_codeowners_file` | fail | 1 | No CODEOWNERS file and no gate files. |

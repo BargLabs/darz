@@ -19,7 +19,7 @@ export const REASONS: Record<string, string> = {
   codeowners_unreadable: "A CODEOWNERS file could not be read, so which file GitHub uses is unknown.",
   codeowners_errors_unreadable: "GET /repos/{owner}/{repo}/codeowners/errors could not be read, so which lines GitHub ignores is unknown.",
   codeowners_error_ambiguous:
-    "The last CODEOWNERS line matching these gate files is one GitHub reports as an error, and GitHub's handling of that line cannot be read: applied with its unflagged owners, or ignored for an earlier line, it could give them an owner.",
+    "The last CODEOWNERS line matching these gate files has an error whose handling is not verified (an unknown kind, or an error with no column at an owner): applied with its unflagged owners, or ignored for an earlier line, it could give them an owner.",
   gate_candidate_unreadable:
     "A package.json, vite.config.*, pyproject.toml or setup.cfg could not be read or parsed, so whether it holds test settings, and is a gate file, is unknown.",
   gate_candidates_over_cap:

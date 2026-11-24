@@ -43,8 +43,18 @@ export function codeownersRegex(pattern) {
 export function codeownersPatternMatches(pattern, path) {
     return codeownersRegex(pattern).test(path);
 }
-/** GitHub's kind for an owner it does not recognise. */
+/**
+ * GitHub's error kinds whose handling was verified on 24 Nov 2026 in a scratch
+ * repository (codeowners/errors, the file view, and the code-owner review
+ * GitHub requested on pull requests):
+ * - Unknown owner (no such account, or no write access): the line applies
+ *   with the owners not flagged, so with all flagged the path has no owner;
+ * - Invalid owner, anywhere on the line: the whole line is skipped;
+ * - Invalid pattern: the line matches nothing, the same as skipped.
+ */
 const UNKNOWN_OWNER = "Unknown owner";
+const SKIPPING_KINDS = new Set(["Invalid owner", "Invalid pattern"]);
+const VERIFIED_KINDS = new Set([UNKNOWN_OWNER, ...SKIPPING_KINDS]);
 export function parseCodeowners(text, errors = []) {
     const byLine = new Map();
     for (const e of errors) {
@@ -65,6 +75,10 @@ export function parseCodeowners(text, errors = []) {
         // Tokens with their 1-based column in the line as written, as GitHub counts.
         const tokens = [...raw.matchAll(/\S+/g)].map((m) => ({ text: m[0], column: (m.index ?? 0) + 1 }));
         const pattern = tokens[0].text;
+        // GitHub does not support negation: it reports no error for a ! line, and
+        // the line has no effect (verified 24 Nov 2026).
+        if (pattern.startsWith("!"))
+            return;
         const ownerTokens = [];
         for (const t of tokens.slice(1)) {
             if (t.text.startsWith("#"))
@@ -78,21 +92,25 @@ export function parseCodeowners(text, errors = []) {
             return;
         }
         ignoredLines.push({ line: lineNo, source: line });
-        // Verified in a scratch repository: when every owner on a
-        // line is reported as an unknown owner, GitHub still applies the line and
-        // the path has no code owner. Any other case is not verified: ambiguous.
-        const flagged = new Set(lineErrors.filter((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number").map((e) => e.column));
-        const allUnknown = ownerTokens.length > 0 &&
-            lineErrors.every((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number") &&
-            ownerTokens.every((t) => flagged.has(t.column));
-        if (allUnknown) {
-            rules.push({ line: lineNo, pattern, owners: [], errored: false, regex: codeownersRegex(pattern) });
+        const kinds = lineErrors.map((e) => e.kind);
+        // An Invalid owner or Invalid pattern skips the line, whatever else is on it,
+        // as long as every error on it is of a verified kind.
+        if (kinds.every((k) => k !== undefined && VERIFIED_KINDS.has(k)) && kinds.some((k) => k !== undefined && SKIPPING_KINDS.has(k))) {
             return;
         }
-        const columns = new Set(lineErrors.map((e) => e.column));
-        const unflaggedOwners = columns.has(undefined)
+        // Only Unknown owner errors, each pointing at an owner: the line applies with the others.
+        const columns = new Set(ownerTokens.map((t) => t.column));
+        if (lineErrors.every((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number" && columns.has(e.column))) {
+            const flagged = new Set(lineErrors.map((e) => e.column));
+            const kept = ownerTokens.filter((t) => !flagged.has(t.column)).map((t) => t.text);
+            rules.push({ line: lineNo, pattern, owners: kept, errored: false, regex: codeownersRegex(pattern) });
+            return;
+        }
+        // Any other shape is not verified: ambiguous.
+        const errorColumns = new Set(lineErrors.map((e) => e.column));
+        const unflaggedOwners = errorColumns.has(undefined)
             ? owners
-            : ownerTokens.filter((t) => !columns.has(t.column)).map((t) => t.text);
+            : ownerTokens.filter((t) => !errorColumns.has(t.column)).map((t) => t.text);
         rules.push({ line: lineNo, pattern, owners, errored: true, unflaggedOwners, regex: codeownersRegex(pattern) });
     });
     return { rules, ignoredLines };
