@@ -38,6 +38,13 @@ inputs:
     description: The GitHub API URL. No other host is called.
     required: false
     default: ${{ github.api_url }}
+  graphql-ruleset-roles:
+    description: >-
+      Also read ruleset bypass role names with GitHub's GraphQL API, so check 4 can decide role-based
+      bypasses. This is the one exception to GET-only: compiled, read-only GraphQL queries sent as POST.
+      true or false, in any case.
+    required: false
+    default: "false"
   fail-on:
     description: >-
       fail (default) fails the step when a check fails; unverifiable also fails it when a row is

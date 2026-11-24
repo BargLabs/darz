@@ -20,6 +20,7 @@ export function buildRecord(a, options) {
             agentApps: [...options.agentApps],
             gates: [...options.gates],
             merges: options.merges,
+            graphqlRulesetRoles: options.graphqlRulesetRoles === true,
         },
         classicProtection: a.classicProtection,
         reads,

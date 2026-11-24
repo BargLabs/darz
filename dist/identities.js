@@ -24,7 +24,15 @@ export function appLabel(id) {
 }
 export class IdentitySet {
     #items = [];
+    /** Declared ids per app slug (lower case) when one slug was declared with different ids. */
+    #conflicts = new Map();
+    /** App slugs (lower case) named by a declaration, in a flag or `.github/darz.json`. */
+    #declaredSlugs = new Set();
+    /** Declared slugs per app id when two different declared slugs turned out to share it. */
+    #shared = new Map();
     add(kind, name, appId, source, foundIn) {
+        if (kind === "app" && name !== null && source === "declared")
+            this.#declaredSlugs.add(name.toLowerCase());
         const existing = this.#items.find((i) => {
             if (i.kind !== kind)
                 return false;
@@ -37,6 +45,12 @@ export class IdentitySet {
             return false;
         });
         if (existing) {
+            if (kind === "app" && name !== null && appId !== null && existing.appId !== undefined && existing.appId !== appId) {
+                const key = (existing.slug ?? name).toLowerCase();
+                const c = this.#conflicts.get(key) ?? { slug: existing.slug ?? name, ids: new Set([existing.appId]) };
+                c.ids.add(appId);
+                this.#conflicts.set(key, c);
+            }
             if (source === "declared")
                 existing.source = "declared";
             if (!existing.foundIn.includes(foundIn))
@@ -60,7 +74,11 @@ export class IdentitySet {
         else
             this.add("user", login, null, source, foundIn);
     }
-    /** Merge app entries that turned out to share an app id. */
+    /**
+     * Merge app entries that turned out to share an app id. The merged entry
+     * keeps the first slug. Two different declared slugs merged this way are
+     * recorded: one of them names no app, or a different one.
+     */
     mergeByAppId() {
         for (let i = 0; i < this.#items.length; i++) {
             const a = this.#items[i];
@@ -70,6 +88,15 @@ export class IdentitySet {
                 const b = this.#items[j];
                 if (b.kind !== "app" || b.appId !== a.appId)
                     continue;
+                if (a.slug !== undefined && b.slug !== undefined && a.slug.toLowerCase() !== b.slug.toLowerCase()) {
+                    const declared = (x) => this.#declaredSlugs.has(x.toLowerCase());
+                    if (declared(a.slug) && declared(b.slug)) {
+                        const slugs = this.#shared.get(a.appId) ?? new Map();
+                        slugs.set(a.slug.toLowerCase(), a.slug);
+                        slugs.set(b.slug.toLowerCase(), b.slug);
+                        this.#shared.set(a.appId, slugs);
+                    }
+                }
                 if (b.source === "declared")
                     a.source = "declared";
                 if (!a.slug && b.slug)
@@ -83,6 +110,25 @@ export class IdentitySet {
     }
     list() {
         return this.#items;
+    }
+    /**
+     * App slugs declared with more than one id. The identity keeps the first id,
+     * so which app is the agent is unknown; the checks report it.
+     */
+    appIdConflicts() {
+        return [...this.#conflicts.values()]
+            .map((c) => ({ slug: c.slug, ids: [...c.ids].sort((a, b) => a - b) }))
+            .sort((a, b) => (a.slug.toLowerCase() < b.slug.toLowerCase() ? -1 : 1));
+    }
+    /**
+     * App ids that two or more different declared slugs resolve to, after
+     * {@link mergeByAppId}. The identity keeps one slug, so a bot login under
+     * another may match no identity; the checks report it.
+     */
+    appSlugsSharingId() {
+        return [...this.#shared.entries()]
+            .map(([id, slugs]) => ({ id, slugs: [...slugs.values()].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1)) }))
+            .sort((a, b) => a.id - b.id);
     }
 }
 /**

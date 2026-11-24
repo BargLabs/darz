@@ -291,7 +291,11 @@ describe("check 3: writer_not_approver", () => {
     const r = row(await run(fx), "writer_not_approver");
     expect(r.status).toBe("fail");
     expect(r.reasons).toEqual([
-      expect.objectContaining({ code: "agent_is_code_owner", subjects: ["coder-agent: .github/workflows/ci.yml"] }),
+      expect.objectContaining({
+        code: "agent_is_code_owner",
+        // The probe path stands for a new workflow, which the agent would own too.
+        subjects: ["coder-agent: .github/workflows/ci.yml, .github/workflows/darz-probe-new-workflow.yaml, .github/workflows/darz-probe-new-workflow.yml"],
+      }),
     ]);
   });
 
@@ -394,7 +398,7 @@ describe("check 4: agents_cannot_bypass", () => {
     expect(a.identities.filter((i) => i.kind === "app")).toHaveLength(1);
   });
 
-  // Issue 4: GitHub does not document which actor_id is which built-in
+  // GitHub does not document which actor_id is which built-in
   // repository role, so a role bypass cannot be matched to an agent's permission.
   for (const roleId of [2, 4, 5, 99]) {
     it(`a RepositoryRole bypass (actor_id ${roleId}) with an agent collaborator is unverifiable, never pass`, async () => {
@@ -424,7 +428,7 @@ describe("check 4: agents_cannot_bypass", () => {
     expect(codes(r)).toContain("agent_is_admin");
   });
 
-  // Issue 3: GitHub leaves bypass_pull_request_allowances out when there are
+  // GitHub leaves bypass_pull_request_allowances out when there are
   // none (seen on a live repository, 23 Nov), so its absence is not field_missing.
   it("classic protection with reviews and no bypass_pull_request_allowances field has no allowances", async () => {
     const fx = goodFixture();
@@ -437,6 +441,8 @@ describe("check 4: agents_cannot_bypass", () => {
     const fx = goodFixture();
     fx.collaborators = [[collaborator("alice", "admin"), collaborator("coder-agent", "admin")]];
     fx.rulesets = { 42: ruleset(42, [{ actor_id: 1, actor_type: "OrganizationAdmin", bypass_mode: "always" }]) };
+    // The agent is covered only as an organisation owner.
+    fx.extra["/orgs/acme/memberships/coder-agent"] = ok({ role: "admin", state: "active" });
     const r = row(await run(fx), "agents_cannot_bypass");
     expect(codes(r)).toEqual(["agent_role_can_bypass", "agent_is_admin"]);
   });
@@ -492,7 +498,7 @@ describe("check 4: agents_cannot_bypass", () => {
   });
 });
 
-describe("classic protection: a 404 is not proof of absence (issue 15)", () => {
+describe("classic protection: a 404 is not proof of absence", () => {
   it("an admin user's token that gets a 404 on classic protection makes it unreadable, not absent", async () => {
     const fx = goodFixture();
     fx.classic = NOT_FOUND;
@@ -578,6 +584,7 @@ describe("check 6: agent_merges_touching_gates", () => {
           author: "coder-agent",
           mergedAt: "2026-11-17T12:00:00Z",
           gateFilesChanged: [".github/workflows/ci.yml"],
+          candidatesUnknown: [],
           fileListTruncated: false,
           approvers: ["alice"],
         },
@@ -636,7 +643,7 @@ describe("check 6: agent_merges_touching_gates", () => {
     expect(codes(r)).toEqual(["pull_request_files_unreadable"]);
   });
 
-  it("a file list at GitHub's 3,000-file cap is unverifiable, not a complete list (issue 13)", async () => {
+  it("a file list at GitHub's 3,000-file cap is unverifiable, not a complete list", async () => {
     const fx = goodFixture();
     const pages = Array.from({ length: 30 }, (_, p) => Array.from({ length: 100 }, (_, i) => `src/f${p * 100 + i}.ts`));
     fx.pulls = [{ number: 7, author: "coder-agent", files: pages, reviews: [{ user: "alice", state: "APPROVED" }] }];

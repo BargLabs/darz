@@ -23,6 +23,9 @@ Options:
   --out <dir>            output directory (default ./darz-out)
   --api-url <url>        API base URL (default ${DEFAULT_API_URL})
   --token-env <name>     environment variable holding the token (default GITHUB_TOKEN)
+  --graphql-ruleset-roles[=true|false]
+                         also read ruleset bypass role names with GitHub's GraphQL API
+                         (POST, compiled read-only queries; off by default)
   --version              print the version
   --help                 print this help
 
@@ -42,6 +45,7 @@ function parseArgs(argv) {
         out: "darz-out",
         apiUrl: DEFAULT_API_URL,
         tokenEnv: "GITHUB_TOKEN",
+        graphqlRulesetRoles: false,
     };
     const positional = [];
     for (let i = 0; i < argv.length; i++) {
@@ -54,6 +58,15 @@ function parseArgs(argv) {
         if (arg.startsWith("--") && arg.includes("=")) {
             value = arg.slice(arg.indexOf("=") + 1);
             arg = arg.slice(0, arg.indexOf("="));
+        }
+        if (arg === "--graphql-ruleset-roles") {
+            // A switch: bare, or =true / =false like the other --flag=value forms.
+            const v = value?.toLowerCase();
+            if (v !== undefined && v !== "true" && v !== "false") {
+                throw new UsageError(`--graphql-ruleset-roles takes no value, or =true or =false, not "${value}"`);
+            }
+            p.graphqlRulesetRoles = v !== "false";
+            continue;
         }
         if (!arg.startsWith("-")) {
             positional.push(arg);
@@ -169,9 +182,16 @@ export async function main(argv, io) {
             agentApps: a.agentApps,
             gates: a.gates,
             merges: a.merges,
+            graphqlRulesetRoles: a.graphqlRulesetRoles,
             ...(io.now ? { now: io.now } : {}),
         });
-        const record = buildRecord(assessment, { agents: a.agents, agentApps: a.agentApps, gates: a.gates, merges: a.merges });
+        const record = buildRecord(assessment, {
+            agents: a.agents,
+            agentApps: a.agentApps,
+            gates: a.gates,
+            merges: a.merges,
+            graphqlRulesetRoles: a.graphqlRulesetRoles,
+        });
         const { bytes, sha256 } = serializeRecord(record);
         guard(bytes.toString("utf8"));
         const sarifText = guard(`${JSON.stringify(buildSarif(assessment), null, 2)}\n`);

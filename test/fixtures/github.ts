@@ -23,6 +23,11 @@ export function blobSha(path: string): string {
   return createHash("sha1").update(`blob:${path}`).digest("hex");
 }
 
+/** A stable merge commit SHA per pull request number. */
+export function mergeSha(number: number): string {
+  return createHash("sha1").update(`merge:${number}`).digest("hex");
+}
+
 export function b64(text: string): string {
   return Buffer.from(text, "utf8").toString("base64");
 }
@@ -217,6 +222,9 @@ export function toRoutes(fx: Fixture): Routes {
     html_url: `https://github.com/${REPO}/pull/${p.number}`,
     user: { login: p.author, type: p.authorType ?? (p.author.endsWith("[bot]") ? "Bot" : "User") },
     merged_at: p.merged === false ? null : `2026-11-${String(10 + (p.number % 15)).padStart(2, "0")}T12:00:00Z`,
+    merge_commit_sha: mergeSha(p.number),
+    // Merging sets updated_at, so a merged fixture was last updated when it merged.
+    updated_at: `2026-11-${String(10 + (p.number % 15)).padStart(2, "0")}T12:00:00Z`,
     base: { ref: "main" },
   }));
   if (fx.pullsResponse) routes[PULLS_PATH] = fx.pullsResponse;

@@ -78,17 +78,22 @@ export function parseCodeowners(text, errors = []) {
             return;
         }
         ignoredLines.push({ line: lineNo, source: line });
-        // Verified (issue 5, in a scratch repository): when every owner on a
+        // Verified in a scratch repository: when every owner on a
         // line is reported as an unknown owner, GitHub still applies the line and
         // the path has no code owner. Any other case is not verified: ambiguous.
         const flagged = new Set(lineErrors.filter((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number").map((e) => e.column));
         const allUnknown = ownerTokens.length > 0 &&
             lineErrors.every((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number") &&
             ownerTokens.every((t) => flagged.has(t.column));
-        if (allUnknown)
+        if (allUnknown) {
             rules.push({ line: lineNo, pattern, owners: [], errored: false, regex: codeownersRegex(pattern) });
-        else
-            rules.push({ line: lineNo, pattern, owners, errored: true, regex: codeownersRegex(pattern) });
+            return;
+        }
+        const columns = new Set(lineErrors.map((e) => e.column));
+        const unflaggedOwners = columns.has(undefined)
+            ? owners
+            : ownerTokens.filter((t) => !columns.has(t.column)).map((t) => t.text);
+        rules.push({ line: lineNo, pattern, owners, errored: true, unflaggedOwners, regex: codeownersRegex(pattern) });
     });
     return { rules, ignoredLines };
 }
@@ -99,15 +104,14 @@ export function ownersOf(file, path) {
             continue;
         if (!rule.errored)
             return { owners: [...rule.owners], line: rule.line, ambiguous: false };
-        let ambiguous = false;
-        for (let j = i - 1; j >= 0; j--) {
-            const earlier = file.rules[j];
-            if (earlier.errored || !earlier.regex.test(path))
-                continue;
-            ambiguous = earlier.owners.length > 0;
-            break;
-        }
-        return { owners: [], line: rule.line, ambiguous };
+        // Reading one: GitHub applies the line with the owners it did not flag.
+        if ((rule.unflaggedOwners ?? []).length > 0)
+            return { owners: [], line: rule.line, ambiguous: true };
+        // Reading two: GitHub ignores the line, and the last earlier match applies.
+        // That match may itself be errored, so it is read the same way.
+        const before = { ...file, rules: file.rules.slice(0, i) };
+        const earlier = ownersOf(before, path);
+        return { owners: [], line: rule.line, ambiguous: earlier.owners.length > 0 || earlier.ambiguous };
     }
     return { owners: [], line: null, ambiguous: false };
 }

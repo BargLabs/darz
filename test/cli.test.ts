@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { main } from "../src/cli.js";
 import { TOOL_VERSION } from "../src/version.js";
-import { FORBIDDEN, NOT_FOUND, REPO, fixtureFetch, goodFixture, pullRequestRule } from "./fixtures/github.js";
+import { FORBIDDEN, NOT_FOUND, REPO, fixtureFetch, goodFixture, pullRequestRule, ruleset } from "./fixtures/github.js";
 import { recordErrors, sarifErrors } from "./helpers/schemas.js";
 
 const SENTINEL = "ghp_DARZ_SENTINEL_TOKEN_must_never_appear_0123456789";
@@ -107,7 +107,61 @@ describe("outputs", () => {
   it("records the inputs needed to re-run", async () => {
     const r = await cli([REPO, "--agent", "coder-agent", "--agent-app", "fixer", "--gate", "Makefile", "--merges", "20"]);
     const rec = JSON.parse(r.files["darz-record.json"] as string);
-    expect(rec.options).toEqual({ agentApps: ["fixer"], agents: ["coder-agent"], gates: ["Makefile"], merges: 20 });
+    expect(rec.options).toEqual({
+      agentApps: ["fixer"],
+      agents: ["coder-agent"],
+      gates: ["Makefile"],
+      graphqlRulesetRoles: false,
+      merges: 20,
+    });
+  });
+
+  const roleBypassFixture = () => {
+    const fx = goodFixture();
+    fx.rulesets = { 42: ruleset(42, [{ actor_id: 4, actor_type: "RepositoryRole", bypass_mode: "always" }]) };
+    return fx;
+  };
+
+  it("--graphql-ruleset-roles is recorded, and without it Darz sends no POST", async () => {
+    const f = fixtureFetch(roleBypassFixture());
+    const out = mkdtempSync(join(tmpdir(), "darz-test-"));
+    await main([REPO, "--out", out, "--agent", "coder-agent"], { env: {}, fetch: f.fetch, stdout: () => {}, stderr: () => {} });
+    expect(f.calls.every((c) => c.method === "GET")).toBe(true);
+    const g = fixtureFetch(roleBypassFixture());
+    const out2 = mkdtempSync(join(tmpdir(), "darz-test-"));
+    await main([REPO, "--out", out2, "--agent", "coder-agent", "--graphql-ruleset-roles"], { env: {}, fetch: g.fetch, stdout: () => {}, stderr: () => {} });
+    expect(g.calls.some((c) => c.method === "POST" && c.url === "https://api.github.com/graphql")).toBe(true);
+    const rec = JSON.parse(readFileSync(join(out2, "darz-record.json"), "utf8"));
+    expect(rec.options.graphqlRulesetRoles).toBe(true);
+    expect(rec.reads.some((r: { endpoint: string }) => r.endpoint === "POST /graphql#rulesetBypassRoles")).toBe(true);
+    expect(recordErrors(rec)).toEqual([]);
+  });
+
+  it("--graphql-ruleset-roles=true and =false are accepted; any other value is a usage error", async () => {
+    for (const [arg, posts] of [["--graphql-ruleset-roles=true", true], ["--graphql-ruleset-roles=false", false]] as const) {
+      const f = fixtureFetch(roleBypassFixture());
+      const out = mkdtempSync(join(tmpdir(), "darz-test-"));
+      const code = await main([REPO, "--out", out, "--agent", "coder-agent", arg], { env: {}, fetch: f.fetch, stdout: () => {}, stderr: () => {} });
+      expect(code).not.toBe(64);
+      expect(f.calls.some((c) => c.method === "POST")).toBe(posts);
+      expect(JSON.parse(readFileSync(join(out, "darz-record.json"), "utf8")).options.graphqlRulesetRoles).toBe(posts);
+    }
+    let err = "";
+    const code = await main([REPO, "--graphql-ruleset-roles=yes"], { env: {}, fetch: fixtureFetch(goodFixture()).fetch, stdout: () => {}, stderr: (s) => (err += s) });
+    expect(code).toBe(64);
+    expect(err).toMatch(/--graphql-ruleset-roles/);
+  });
+
+  it("options.graphqlRulesetRoles records what was asked; the reads say whether the reader ran", async () => {
+    const fx = roleBypassFixture();
+    fx.repo = NOT_FOUND;
+    const f = fixtureFetch(fx);
+    const out = mkdtempSync(join(tmpdir(), "darz-test-"));
+    await main([REPO, "--out", out, "--agent", "coder-agent", "--graphql-ruleset-roles"], { env: {}, fetch: f.fetch, stdout: () => {}, stderr: () => {} });
+    const rec = JSON.parse(readFileSync(join(out, "darz-record.json"), "utf8"));
+    expect(rec.options.graphqlRulesetRoles).toBe(true);
+    expect(rec.reads.some((r: { endpoint: string }) => r.endpoint.startsWith("POST "))).toBe(false);
+    expect(f.calls.some((c) => c.method === "POST")).toBe(false);
   });
 
   it("--version prints the version", async () => {

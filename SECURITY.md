@@ -2,6 +2,8 @@
 
 Darz reads a repository's settings with GET requests only. It never writes to any API, never prints, logs or stores the token, and calls no host other than the configured API URL. A report that any of these can be broken is a security issue.
 
+There is one opt-in exception to GET only. `--graphql-ruleset-roles` sends GraphQL queries, which travel as POST requests. They are compiled into Darz and are never a mutation. A way to make that reader send anything else is also a security issue.
+
 So is a way to make Darz report `pass` for a setting it could not read or that does not hold. Darz is meant to fail closed: an unreadable setting is `unverifiable`, never `pass`.
 
 ## Reporting a vulnerability

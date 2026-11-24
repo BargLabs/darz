@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Barg Labs
 
-// Issue 18: GitHub answers 404 on classic branch protection both when there is
+// GitHub answers 404 on classic branch protection both when there is
 // none and when the token may not read it. A classic token says what it may do
 // in the x-oauth-scopes response header: with the repo scope and an admin user,
 // it can read classic protection, so a 404 then proves there is none. Without
@@ -50,7 +50,7 @@ function rulesetsOnly(scopes: string | null, admin = true): Fixture {
   return fx;
 }
 
-describe("classic protection absence is proven only by the token's own scopes (issue 18)", () => {
+describe("classic protection absence is proven only by the token's own scopes", () => {
   it("an admin user's classic token with the repo scope that gets a 404: there is no classic protection", async () => {
     const a = await run(rulesetsOnly("repo, workflow"));
     expect(a.classicProtection).toEqual({ state: "absent", basis: "admin_token_with_repo_scope" });

@@ -2,10 +2,12 @@
 // Copyright 2026 Barg Labs
 
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assess } from "../src/assess.js";
 import { canonicalize } from "../src/canonical.js";
 import { buildRecord, serializeRecord } from "../src/record.js";
+import { RECORD_FORMAT, TOOL_VERSION } from "../src/version.js";
 import { FORBIDDEN, NOT_FOUND, REPO, fixtureFetch, goodFixture, pullRequestRule } from "./fixtures/github.js";
 import { recordErrors } from "./helpers/schemas.js";
 
@@ -78,8 +80,8 @@ describe("the record", () => {
   it("carries the format, tool version, repository, branch, commit, readAt in UTC, reads, identities and checks", async () => {
     const a = await assess({ repo: REPO, fetch: fixtureFetch(goodFixture()).fetch, agents: ["coder-agent"], now });
     const r = buildRecord(a, { agents: ["coder-agent"], agentApps: [], gates: [], merges: 50 });
-    expect(r.format).toBe("darz-record-0.1");
-    expect(r.tool).toEqual({ name: "darz", version: "0.1.0" });
+    expect(r.format).toBe("darz-record-0.2");
+    expect(r.tool).toEqual({ name: "darz", version: "0.2.0" });
     expect(r.repository).toBe(REPO);
     expect(r.defaultBranch).toBe("main");
     expect(r.commitSha).toMatch(/^[0-9a-f]{40}$/);
@@ -121,7 +123,7 @@ describe("the record", () => {
     ],
   ];
   for (const [name, make] of variants) {
-    it(`a ${name} record validates against schema/record-0.1.schema.json`, async () => {
+    it(`a ${name} record validates against schema/record-0.2.schema.json`, async () => {
       for (const agents of [["coder-agent"], []]) {
         const a = await assess({ repo: REPO, fetch: fixtureFetch(make()).fetch, agents, now });
         const r = JSON.parse(serializeRecord(buildRecord(a, { agents, agentApps: [], gates: [], merges: 50 })).bytes.toString("utf8"));
@@ -135,5 +137,35 @@ describe("the record", () => {
     const r = JSON.parse(serializeRecord(buildRecord(a, { agents: [], agentApps: [], gates: [], merges: 50 })).bytes.toString("utf8"));
     r.checks[0].status = "ok";
     expect(recordErrors(r)).not.toEqual([]);
+  });
+});
+
+describe("record formats", () => {
+  // v0.1.0 was released with schema/record-0.1.schema.json as it stood before
+  // the GraphQL reader. A record format, once released, does not change: the
+  // reader's fields are format darz-record-0.2.
+  it("schema/record-0.1.schema.json is byte for byte the file released in v0.1.0", () => {
+    const bytes = readFileSync(new URL("../schema/record-0.1.schema.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      "fbc1377e1de14927b784c9d5d351240e53a4232805441b35c07ecb813a11ea10",
+    );
+  });
+
+  // Format 0.2 shipped in the code while the tool still said 0.1.0.
+  // A tool version older than the record format it writes reads as a release
+  // that cannot have written that format.
+  it("the tool version is not older than the record format it writes", () => {
+    const format = /^darz-record-(\d+)\.(\d+)$/.exec(RECORD_FORMAT);
+    const tool = /^(\d+)\.(\d+)\.(\d+)$/.exec(TOOL_VERSION);
+    expect(format, RECORD_FORMAT).not.toBeNull();
+    expect(tool, TOOL_VERSION).not.toBeNull();
+    const [fMajor, fMinor] = [Number(format?.[1]), Number(format?.[2])];
+    const [tMajor, tMinor] = [Number(tool?.[1]), Number(tool?.[2])];
+    expect(tMajor > fMajor || (tMajor === fMajor && tMinor >= fMinor), `tool ${TOOL_VERSION} writes ${RECORD_FORMAT}`).toBe(true);
+  });
+
+  it("schema/record-0.2.schema.json is for format darz-record-0.2", () => {
+    const schema = JSON.parse(readFileSync(new URL("../schema/record-0.2.schema.json", import.meta.url), "utf8"));
+    expect(schema.properties.format).toEqual({ const: "darz-record-0.2" });
   });
 });

@@ -9,7 +9,7 @@ const INFO_URI = "https://github.com/BargLabs/darz";
 
 const HELP: Record<CheckId, string> = {
   gate_files_owned:
-    "Every gate file (CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, package.json, vite.config.*, pyproject.toml or setup.cfg when they hold test settings, .github/darz.json) must have a code owner, and the default branch must require code-owner review. Otherwise an agent can change the rules that judge it with an ordinary approval. Unverifiable when the tree, CODEOWNERS, codeowners/errors, a candidate file or the rules could not be read, or the tree was truncated.",
+    "Every gate file (CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, package.json, vite.config.*, pyproject.toml or setup.cfg when they hold test settings, .github/darz.json) must have a code owner, as must a new file in a gate directory and a CODEOWNERS file in a location GitHub reads first; and the default branch must require code-owner review. Otherwise an agent can change the rules that judge it with an ordinary approval. Unverifiable when the tree, CODEOWNERS, codeowners/errors, a candidate file or the rules could not be read, or the tree was truncated.",
   human_review_required:
     "The default branch must require at least one approving review, dismiss stale approvals on push, and require approval of the most recent push by someone other than its pusher, from the effective rules or classic protection. Unverifiable when a source that could supply a missing setting could not be read; classic protection needs a token with repository administration read.",
   writer_not_approver:

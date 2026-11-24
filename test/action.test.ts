@@ -30,6 +30,7 @@ function actionEnv(inputs: Record<string, string>) {
     "INPUT_AGENTS": "",
     "INPUT_AGENT-APPS": "",
     "INPUT_GATES": "",
+    "INPUT_GRAPHQL-RULESET-ROLES": "false",
   };
   for (const [k, v] of Object.entries(inputs)) env[`INPUT_${k.toUpperCase()}`] = v;
   return { env, dir, output, summary };
@@ -85,6 +86,25 @@ describe("inputs", () => {
     ]);
     expect(run.argv.join(" ")).not.toContain(SENTINEL);
     expect(run.env).toEqual({ DARZ_ACTION_TOKEN: SENTINEL });
+  });
+
+  it("graphql-ruleset-roles: true adds the flag; anything but true or false is refused", () => {
+    expect(inputsToRun(actionEnv({ "graphql-ruleset-roles": "true" }).env).argv).toContain("--graphql-ruleset-roles");
+    expect(inputsToRun(actionEnv({ "graphql-ruleset-roles": "false" }).env).argv).not.toContain("--graphql-ruleset-roles");
+    expect(() => inputsToRun(actionEnv({ "graphql-ruleset-roles": "yes" }).env)).toThrow(/graphql-ruleset-roles/);
+  });
+
+  it("graphql-ruleset-roles reads true and false in any case, as YAML writes them", () => {
+    for (const v of ["True", "TRUE"]) {
+      expect(inputsToRun(actionEnv({ "graphql-ruleset-roles": v }).env).argv).toContain("--graphql-ruleset-roles");
+    }
+    for (const v of ["False", "FALSE"]) {
+      expect(inputsToRun(actionEnv({ "graphql-ruleset-roles": v }).env).argv).not.toContain("--graphql-ruleset-roles");
+    }
+  });
+
+  it("a refused graphql-ruleset-roles value is quoted as written", () => {
+    expect(() => inputsToRun(actionEnv({ "graphql-ruleset-roles": "YES" }).env)).toThrow(/"YES"/);
   });
 
   it("an unknown fail-on value is refused", () => {
