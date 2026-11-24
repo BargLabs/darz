@@ -2,6 +2,7 @@
 // Copyright 2026 Barg Labs
 
 import type { Assessment } from "./assess.js";
+import type { LessonResult } from "./checks/lessons.js";
 import { CHECK_IDS, CHECK_TITLES, type CheckId, type CheckRow } from "./checks/types.js";
 import { TOOL_NAME, TOOL_VERSION } from "./version.js";
 
@@ -9,7 +10,7 @@ const INFO_URI = "https://github.com/BargLabs/darz";
 
 const HELP: Record<CheckId, string> = {
   gate_files_owned:
-    "Every gate file (CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, package.json, vite.config.*, pyproject.toml or setup.cfg when they hold test settings, .github/darz.json) must have a code owner, as must a new file in a gate directory and a CODEOWNERS file in a location GitHub reads first; and the default branch must require code-owner review. Otherwise an agent can change the rules that judge it with an ordinary approval. Unverifiable when the tree, CODEOWNERS, codeowners/errors, a candidate file or the rules could not be read, or the tree was truncated.",
+    "Every gate file (CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, package.json, vite.config.*, pyproject.toml or setup.cfg when they hold test settings, .github/darz.json, lesson files in .github/darz/lessons/) must have a code owner, as must a new file in a gate directory and a CODEOWNERS file in a location GitHub reads first; and the default branch must require code-owner review. Otherwise an agent can change the rules that judge it with an ordinary approval. Unverifiable when the tree, CODEOWNERS, codeowners/errors, a candidate file or the rules could not be read, or the tree was truncated.",
   human_review_required:
     "The default branch must require at least one approving review, dismiss stale approvals on push, and require approval of the most recent push by someone other than its pusher, from the effective rules or classic protection. Unverifiable when a source that could supply a missing setting could not be read; classic protection needs a token with repository administration read.",
   writer_not_approver:
@@ -20,6 +21,8 @@ const HELP: Record<CheckId, string> = {
     "At least one status check must be required before merging, by a rule or by classic protection, and every required check must be pinned to the app that must report it, none to an agent app. An unpinned check can be satisfied by anyone who can post a status or check run with that name. Unverifiable when a source that could pin or require a check could not be read.",
   agent_merges_touching_gates:
     "Context only: the last N merged pull requests by agent identities, the gate files each changed and who approved it. Unverifiable when a list it needs could not be read, or with no agent identities.",
+  lessons_hold:
+    "Each lesson in .github/darz/lessons/ on the default branch is in force only when the latest change to its file was approved, on its pull request's final commit, by a person who is neither the pull request's author nor an agent; a lesson changed without that approval fails. Each lesson in force must hold over the files at the commit read (--ref, or the default branch's head): a forbid pattern matches no line, a require pattern matches a line in every file. With no lesson in force the row is context, never pass. Unverifiable when a lesson is invalid, its approval or a file could not be read, or a cap was reached.",
 };
 
 function pascal(id: string): string {
@@ -71,25 +74,11 @@ export function buildSarif(a: Assessment): Record<string, unknown> {
   }));
   const results = a.checks
     .filter((c) => c.status === "fail" || c.status === "unverifiable")
-    .map((c) => ({
-      ruleId: `darz/${c.id}`,
-      ruleIndex: CHECK_IDS.indexOf(c.id),
-      level: c.status === "fail" ? "error" : "warning",
-      message: { text: messageFor(c) },
-      locations: [
-        {
-          physicalLocation: {
-            artifactLocation: { uri: locationFor(a, c) },
-            region: { startLine: 1 },
-          },
-        },
-      ],
-      properties: { status: c.status, reasons: c.reasons.map((r) => r.code) },
-    }));
+    .flatMap((c) => (c.id === "lessons_hold" ? lessonResults(a, c) : [rowResult(a, c)]));
   const run: Record<string, unknown> = {
     tool: { driver: { name: TOOL_NAME, version: TOOL_VERSION, semanticVersion: TOOL_VERSION, informationUri: INFO_URI, rules } },
     results,
-    properties: { repository: a.repository, readAt: a.readAt },
+    properties: { repository: a.repository, readAt: a.readAt, ref: a.ref },
   };
   const web = webUrlFor(a.apiUrl);
   if (a.commitSha && a.defaultBranch && web) {
@@ -102,4 +91,46 @@ export function buildSarif(a: Assessment): Record<string, unknown> {
     version: "2.1.0",
     runs: [run],
   };
+}
+
+function rowResult(a: Assessment, c: CheckRow): Record<string, unknown> {
+  return {
+    ruleId: `darz/${c.id}`,
+    ruleIndex: CHECK_IDS.indexOf(c.id),
+    level: c.status === "fail" ? "error" : "warning",
+    message: { text: messageFor(c) },
+    locations: [at(locationFor(a, c), 1)],
+    properties: { status: c.status, reasons: c.reasons.map((r) => r.code) },
+  };
+}
+
+function at(uri: string, line: number): Record<string, unknown> {
+  return { physicalLocation: { artifactLocation: { uri }, region: { startLine: line } } };
+}
+
+/**
+ * Check 7 gives one result per lesson that fails or is unverifiable: a
+ * violated lesson at each file and line it found, any other at its lesson
+ * file. A row-level reason with no lesson to point at (the directory could
+ * not be read, too many lessons) gives one result for the row.
+ */
+function lessonResults(a: Assessment, c: CheckRow): Array<Record<string, unknown>> {
+  const lessons = (c.details?.lessons ?? []) as LessonResult[];
+  const out = lessons
+    .filter((l) => l.status === "fail" || l.status === "unverifiable")
+    .map((l) => {
+      const violated = l.reasons.some((r) => r.code === "lesson_violated");
+      const located = violated ? l.findings.filter((f) => f.what !== "no_matching_files") : [];
+      const locations = located.length > 0 ? located.map((f) => at(f.path, f.line ?? 1)) : [at(l.file, 1)];
+      const parts = l.reasons.map((r) => `${r.code}: ${r.message}${r.subjects ? ` (${r.subjects.join("; ")})` : ""}`);
+      return {
+        ruleId: `darz/${c.id}`,
+        ruleIndex: CHECK_IDS.indexOf(c.id),
+        level: l.status === "fail" ? "error" : "warning",
+        message: { text: `${c.title}: lesson ${l.id ?? l.file} is ${l.status}. ${parts.join(" ")}`.trim() },
+        locations,
+        properties: { status: l.status, reasons: l.reasons.map((r) => r.code), lesson: l.id, file: l.file, ref: a.ref },
+      };
+    });
+  return out.length > 0 ? out : [rowResult(a, c)];
 }

@@ -42,6 +42,7 @@ GITHUB_TOKEN=... node dist/bin.js <owner>/<repo> --agent <login> --agent-app <sl
 | `--out <dir>` | Where the outputs go. Default `./darz-out`. |
 | `--api-url <url>` | The API base URL. Default `https://api.github.com`. No other host is called. |
 | `--token-env <name>` | The environment variable that holds the token. Default `GITHUB_TOKEN`. |
+| `--ref <sha>` | The commit check 7 runs lessons over, as a full commit SHA. Default: the default branch's head. Lessons are always read from the head, and every other check reads the head. |
 | `--graphql-ruleset-roles` | Also read ruleset bypass role names with GitHub's GraphQL API (read-only queries sent as POST), so check 4 can decide role-based bypasses. Off by default. `=true` and `=false` are also accepted. |
 
 Agents can also be declared in the repository, at `.github/darz.json` on the default branch:
@@ -50,7 +51,7 @@ Agents can also be declared in the repository, at `.github/darz.json` on the def
 { "agents": ["coder-agent"], "agentApps": [{ "slug": "my-agent-app", "id": 123456 }], "gates": ["Makefile"] }
 ```
 
-Darz also detects agent identities itself: any account whose type is `Bot`, or whose login ends in `[bot]`, found in the collaborators list, the ruleset bypass actors, CODEOWNERS, or the authors of recent merges.
+Darz also detects agent identities itself: any account whose type is `Bot`, or whose login ends in `[bot]`, found in the collaborators list, the ruleset bypass actors, CODEOWNERS, or the authors of recent merges. `github-actions[bot]`, the identity every workflow's token acts as, is a platform identity: it is detected only as a ruleset bypass actor, or when declared.
 
 Darz is read-only:
 
@@ -120,14 +121,39 @@ On a branch protected only by rulesets, one more thing applies. GitHub answers 4
 
 | # | Check | Passes when |
 |---|---|---|
-| 1 | `gate_files_owned` | Every gate file has a code owner, and code-owner review is required. Gate files are CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, and `.github/darz.json`. `package.json`, `vite.config.*`, `pyproject.toml` and `setup.cfg` count only when they hold test or coverage settings. A new workflow, a new action, and a CODEOWNERS file in a location GitHub reads first must have an owner too. |
+| 1 | `gate_files_owned` | Every gate file has a code owner, and code-owner review is required. Gate files are CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, `.github/darz.json`, and lesson files in `.github/darz/lessons/`. `package.json`, `vite.config.*`, `pyproject.toml` and `setup.cfg` count only when they hold test or coverage settings. A new workflow, a new action, and a CODEOWNERS file in a location GitHub reads first must have an owner too. |
 | 2 | `human_review_required` | At least one approving review is required, stale approvals are dismissed on push, and the most recent push must be approved by someone other than its pusher. |
 | 3 | `writer_not_approver` | The last-push rule holds, and no agent identity is a code owner of a gate file. |
 | 4 | `agents_cannot_bypass` | No agent identity can bypass a ruleset, holds admin permission, or is allowed to bypass classic pull request requirements. |
 | 5 | `required_checks_fail_closed` | At least one status check is required before merging, and every required check is pinned to the app that must report it (none to an agent app). An unpinned check can be satisfied by anyone who can post a status with that name. |
 | 6 | `agent_merges_touching_gates` | Context only, never pass or fail. For each recent merge by an agent identity: the gate files it changed, who approved it, and a link. |
+| 7 | `lessons_hold` | Every lesson on the default branch was approved by a person other than its author and not an agent, and every lesson in force holds at the commit read. With no lesson in force the row is context, never pass. See [Lessons](#lessons). |
 
 Each check reads both the branch's effective rules (rulesets, the organisation's included) and classic branch protection. [`docs/checks.md`](docs/checks.md) gives every reason a check can give, and how Darz reads CODEOWNERS, rulesets and classic protection.
+
+## Lessons
+
+A team that sees an agent make the same mistake twice can write it down as a lesson: a statement, the evidence, and a check Darz runs. Each lesson is one file at `.github/darz/lessons/<id>.json` on the default branch, described by [`schema/lesson-0.1.schema.json`](schema/lesson-0.1.schema.json):
+
+```json
+{
+  "id": "no-focused-tests",
+  "statement": "A test file never commits a focused test, which would skip every other test in the file.",
+  "evidence": [{ "kind": "pull_request", "ref": "12" }],
+  "check": {
+    "kind": "forbid",
+    "paths": ["test/**/*.test.ts"],
+    "pattern": "\\b(?:it|describe|test)\\.only\\(",
+    "match": "regex"
+  }
+}
+```
+
+`forbid` means no line in a matching file may match the pattern. `require` means every matching file must have a matching line, and at least one file must match. A lesson can be retired with `"retired": { "on": "YYYY-MM-DD", "reason": "..." }`.
+
+A lesson takes effect only when the latest change to its file was approved, on the pull request's final commit, by a person who is neither the pull request's author nor an agent. Otherwise an agent could write, loosen or retire the lesson that judges it, so a lesson changed without that approval fails check 7 instead of being dropped.
+
+Lesson files are gate files, so check 1 requires them to have a code owner. Check 7 always reads them from the default branch, even when `--ref` points at another commit, so a pull request cannot delete the lesson that judges it. See [`docs/checks.md`](docs/checks.md#7-lessons_hold).
 
 ## What `unverifiable` means
 
@@ -235,9 +261,9 @@ A commit pin fixes an action's own files, not everything it runs. zizmor-action 
 
 Darz writes three files to `--out`:
 
-- **`darz-record.json`:** everything read and found, as [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON. That includes the format (`darz-record-0.2`), the tool version, the repository, the default branch, the commit SHA read, `readAt` in UTC, the options used, which endpoints returned `read`, `not_permitted` or `error`, the agent identities, and every check row. It validates against [`schema/record-0.2.schema.json`](schema/record-0.2.schema.json). Format 0.2 adds the GraphQL reader's option and reads; records from v0.1.0 are format 0.1 and validate against [`schema/record-0.1.schema.json`](schema/record-0.1.schema.json), which is kept as released.
+- **`darz-record.json`:** everything read and found, as [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON. That includes the format (`darz-record-0.3`), the tool version, the repository, the default branch, the commit SHA read, the commit check 7 ran lessons over (`ref`), `readAt` in UTC, the options used, which endpoints returned `read`, `not_permitted` or `error`, the agent identities, and every check row. It validates against [`schema/record-0.3.schema.json`](schema/record-0.3.schema.json). Format 0.3 adds check 7 and `ref`. Records from v0.2.0 are format 0.2 and validate against [`schema/record-0.2.schema.json`](schema/record-0.2.schema.json); records from v0.1.0 are format 0.1 and validate against [`schema/record-0.1.schema.json`](schema/record-0.1.schema.json). Both are kept as released.
 - **`darz-record.json.sha256`:** the SHA-256 of those exact bytes, in `sha256sum` format.
-- **`darz.sarif`:** SARIF 2.1.0, with one result per `fail` (level `error`) or `unverifiable` (level `warning`) row and rule IDs `darz/<check id>`. For github.com, GitHub Enterprise Server (`--api-url https://<host>/api/v3`) and GHE.com it names the repository and commit it read; for any other API URL it leaves that out rather than guess. You can upload it to code scanning.
+- **`darz.sarif`:** SARIF 2.1.0, with one result per `fail` (level `error`) or `unverifiable` (level `warning`) row and rule IDs `darz/<check id>`. Check 7 gives one result per failing or unverifiable lesson instead, located at the file and line a violated lesson found, or at the lesson file. For github.com, GitHub Enterprise Server (`--api-url https://<host>/api/v3`) and GHE.com it names the repository and commit it read; for any other API URL it leaves that out rather than guess. You can upload it to code scanning.
 
 The terminal summary prints one line per check.
 

@@ -61,6 +61,7 @@ describe("check 5: a required check must be pinned to the app that reports it", 
         { context: "test", appIds: [] },
       ],
       mustBeUpToDate: true,
+      pinnedToGitHubActions: [],
     });
   });
 

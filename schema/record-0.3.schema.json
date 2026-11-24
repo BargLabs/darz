@@ -1,0 +1,541 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/BargLabs/darz/blob/main/schema/record-0.3.schema.json",
+  "title": "Darz record, format darz-record-0.3",
+  "description": "What Darz read from a GitHub repository and what each check found. Darz writes it as RFC 8785 canonical JSON; darz-record.json.sha256 holds the SHA-256 of those exact bytes. Format 0.3 adds check 7 (lessons_hold) and ref, the commit check 7 ran lessons over.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "tool",
+    "repository",
+    "apiUrl",
+    "defaultBranch",
+    "commitSha",
+    "ref",
+    "readAt",
+    "options",
+    "classicProtection",
+    "reads",
+    "agentIdentities",
+    "checks",
+    "summary",
+    "exitCode"
+  ],
+  "properties": {
+    "format": {
+      "const": "darz-record-0.3"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "darz"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+        }
+      }
+    },
+    "repository": {
+      "type": "string",
+      "pattern": "^[^/\\s]+/[^/\\s]+$"
+    },
+    "apiUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "defaultBranch": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "commitSha": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "ref": {
+      "description": "The commit check 7 ran lessons over: --ref if given, else the default branch head. Lessons themselves are always read from the default branch head.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
+    },
+    "readAt": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agents",
+        "agentApps",
+        "gates",
+        "merges",
+        "graphqlRulesetRoles",
+        "ref"
+      ],
+      "properties": {
+        "agents": {
+          "$ref": "#/definitions/strings"
+        },
+        "agentApps": {
+          "$ref": "#/definitions/strings"
+        },
+        "gates": {
+          "$ref": "#/definitions/strings"
+        },
+        "merges": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "graphqlRulesetRoles": {
+          "type": "boolean",
+          "description": "Whether the opt-in GraphQL reader was asked for. Whether it ran is in reads: an entry whose endpoint starts with POST."
+        },
+        "ref": {
+          "description": "--ref as given, or null when check 7 ran over the default branch head.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$"
+        }
+      }
+    },
+    "classicProtection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "basis"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "present",
+            "absent",
+            "unreadable",
+            "not_read"
+          ]
+        },
+        "basis": {
+          "enum": [
+            "read",
+            "branch_not_protected",
+            "admin_token_with_repo_scope",
+            "not_permitted_or_error",
+            "not_read"
+          ]
+        }
+      }
+    },
+    "reads": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/read"
+      }
+    },
+    "agentIdentities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/identity"
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "items": {
+        "$ref": "#/definitions/check"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pass",
+        "fail",
+        "unverifiable",
+        "context"
+      ],
+      "properties": {
+        "pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fail": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unverifiable": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "context": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "exitCode": {
+      "enum": [
+        0,
+        1,
+        2,
+        3
+      ]
+    }
+  },
+  "definitions": {
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "read": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "state",
+        "status"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "pattern": "^(GET /|POST /([^\\s#]+/)?graphql#[A-Za-z]+$)"
+        },
+        "state": {
+          "enum": [
+            "read",
+            "not_permitted",
+            "error"
+          ]
+        },
+        "status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pages": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "absent": {
+          "const": true
+        },
+        "errorKind": {
+          "type": "string"
+        },
+        "partial": {
+          "const": true
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "foundIn"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "user",
+            "app"
+          ]
+        },
+        "login": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slug": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appId": {
+          "type": "integer"
+        },
+        "source": {
+          "enum": [
+            "declared",
+            "detected"
+          ]
+        },
+        "foundIn": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "flag",
+              "config",
+              "collaborators",
+              "ruleset_bypass",
+              "codeowners",
+              "merge_authors"
+            ]
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "user"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "login"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "slug"
+              ]
+            },
+            {
+              "required": [
+                "appId"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "anyOf": [
+          {
+            "required": [
+              "slug"
+            ]
+          },
+          {
+            "required": [
+              "appId"
+            ]
+          }
+        ],
+        "not": {
+          "required": [
+            "login"
+          ]
+        }
+      }
+    },
+    "reason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[a-z][a-z_]*$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subjects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "status",
+        "reasons",
+        "read",
+        "context"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "gate_files_owned",
+            "human_review_required",
+            "writer_not_approver",
+            "agents_cannot_bypass",
+            "required_checks_fail_closed",
+            "agent_merges_touching_gates",
+            "lessons_hold"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unverifiable",
+            "context"
+          ]
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/reason"
+          }
+        },
+        "read": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "context": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "details": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pass"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "fail",
+                  "unverifiable"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "agent_merges_touching_gates"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "context",
+                  "unverifiable"
+                ]
+              }
+            }
+          },
+          "else": {
+            "if": {
+              "properties": {
+                "id": {
+                  "const": "lessons_hold"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unverifiable",
+                    "context"
+                  ]
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unverifiable"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "lessons_hold"
+              },
+              "status": {
+                "const": "context"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "reasons": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

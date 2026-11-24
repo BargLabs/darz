@@ -45,6 +45,7 @@ describe("SARIF 2.1.0", () => {
       "darz/agents_cannot_bypass",
       "darz/required_checks_fail_closed",
       "darz/agent_merges_touching_gates",
+      "darz/lessons_hold",
     ]);
     for (const r of rules) expect(r.help.text.length).toBeGreaterThan(20);
   });
@@ -81,7 +82,7 @@ describe("SARIF 2.1.0", () => {
     fx.repo = NOT_FOUND;
     const { sarif } = await sarifFor(fx);
     expect(sarifErrors(sarif)).toEqual([]);
-    expect(sarif.runs[0].results).toHaveLength(6);
+    expect(sarif.runs[0].results).toHaveLength(7);
   });
 });
 
@@ -131,6 +132,7 @@ describe("SARIF provenance and links", () => {
       "4-agents_cannot_bypass",
       "5-required_checks_fail_closed",
       "6-agent_merges_touching_gates",
+      "7-lessons_hold",
     ]);
   });
 });

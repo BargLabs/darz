@@ -113,6 +113,7 @@ describe("outputs", () => {
       gates: ["Makefile"],
       graphqlRulesetRoles: false,
       merges: 20,
+      ref: null,
     });
   });
 

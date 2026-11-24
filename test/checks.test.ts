@@ -51,7 +51,7 @@ function withRules(fx: Fixture, rules: unknown[]): Fixture {
 }
 
 describe("the good fixture", () => {
-  it("passes checks 1 to 5 and gives check 6 as context", async () => {
+  it("passes checks 1 to 5 and gives checks 6 and 7 as context", async () => {
     const a = await run(goodFixture());
     expect(a.checks.map((c) => [c.id, c.status])).toEqual([
       ["gate_files_owned", "pass"],
@@ -60,6 +60,7 @@ describe("the good fixture", () => {
       ["agents_cannot_bypass", "pass"],
       ["required_checks_fail_closed", "pass"],
       ["agent_merges_touching_gates", "context"],
+      ["lessons_hold", "context"],
     ]);
     expect(a.commitSha).toBe(SHA);
     expect(a.defaultBranch).toBe("main");
@@ -535,7 +536,7 @@ describe("check 5: required_checks_fail_closed", () => {
   it("passes and lists each required context and the up-to-date setting", async () => {
     const r = row(await run(goodFixture()), "required_checks_fail_closed");
     expect(r.status).toBe("pass");
-    expect(r.details).toEqual({ requiredChecks: [{ context: "test", appIds: [15368] }], mustBeUpToDate: true });
+    expect(r.details).toEqual({ requiredChecks: [{ context: "test", appIds: [15368] }], mustBeUpToDate: true, pinnedToGitHubActions: ["test"] });
   });
 
   it("passes from classic protection", async () => {
@@ -549,6 +550,7 @@ describe("check 5: required_checks_fail_closed", () => {
         { context: "lint", appIds: [15368] },
       ],
       mustBeUpToDate: false,
+      pinnedToGitHubActions: ["build", "lint"],
     });
   });
 

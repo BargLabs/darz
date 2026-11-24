@@ -1,0 +1,13 @@
+{
+  "id": "client-refuses-non-get",
+  "statement": "Darz's GitHub client refuses every HTTP method but GET before it touches the network.",
+  "evidence": [
+    { "kind": "commit", "ref": "852138aa046cfddadca6b256f6c877f4ee51ac83" }
+  ],
+  "check": {
+    "kind": "require",
+    "paths": ["src/github/client.ts"],
+    "pattern": "if (method.toUpperCase() !== \"GET\") {",
+    "match": "literal"
+  }
+}

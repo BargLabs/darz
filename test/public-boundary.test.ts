@@ -64,7 +64,8 @@ describe("public boundary", () => {
   });
 
   it("the scan reads every file that ships, root files included", () => {
-    for (const f of ["src/assess.ts", "test/public-boundary.test.ts", "docs/checks.md", "dist/bin.js", "action.yml", "LICENSE", "tsconfig.json", ".gitignore"]) {
+    for (const f of ["src/assess.ts", "test/public-boundary.test.ts", "docs/checks.md", "dist/bin.js", "action.yml", "LICENSE", "tsconfig.json", ".gitignore",
+      "src/lessons.ts", "schema/lesson-0.1.schema.json", "schema/record-0.3.schema.json", ".github/darz/lessons/client-refuses-non-get.json"]) {
       expect(files).toContain(f);
       expect(texts.get(f)?.length).toBeGreaterThan(0);
     }

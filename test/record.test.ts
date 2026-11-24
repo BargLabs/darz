@@ -80,8 +80,8 @@ describe("the record", () => {
   it("carries the format, tool version, repository, branch, commit, readAt in UTC, reads, identities and checks", async () => {
     const a = await assess({ repo: REPO, fetch: fixtureFetch(goodFixture()).fetch, agents: ["coder-agent"], now });
     const r = buildRecord(a, { agents: ["coder-agent"], agentApps: [], gates: [], merges: 50 });
-    expect(r.format).toBe("darz-record-0.2");
-    expect(r.tool).toEqual({ name: "darz", version: "0.2.0" });
+    expect(r.format).toBe("darz-record-0.3");
+    expect(r.tool).toEqual({ name: "darz", version: "0.3.0" });
     expect(r.repository).toBe(REPO);
     expect(r.defaultBranch).toBe("main");
     expect(r.commitSha).toMatch(/^[0-9a-f]{40}$/);
@@ -90,7 +90,7 @@ describe("the record", () => {
     expect(r.reads.find((x) => x.endpoint === `GET /repos/${REPO}/branches/main/protection`)?.state).toBe("read");
     expect(r.classicProtection).toEqual({ state: "present", basis: "read" });
     expect(r.agentIdentities).toEqual([{ kind: "user", login: "coder-agent", source: "declared", foundIn: ["flag"] }]);
-    expect(r.checks).toHaveLength(6);
+    expect(r.checks).toHaveLength(7);
     expect(r.exitCode).toBe(0);
   });
 
@@ -123,7 +123,7 @@ describe("the record", () => {
     ],
   ];
   for (const [name, make] of variants) {
-    it(`a ${name} record validates against schema/record-0.2.schema.json`, async () => {
+    it(`a ${name} record validates against schema/record-0.3.schema.json`, async () => {
       for (const agents of [["coder-agent"], []]) {
         const a = await assess({ repo: REPO, fetch: fixtureFetch(make()).fetch, agents, now });
         const r = JSON.parse(serializeRecord(buildRecord(a, { agents, agentApps: [], gates: [], merges: 50 })).bytes.toString("utf8"));
@@ -164,8 +164,17 @@ describe("record formats", () => {
     expect(tMajor > fMajor || (tMajor === fMajor && tMinor >= fMinor), `tool ${TOOL_VERSION} writes ${RECORD_FORMAT}`).toBe(true);
   });
 
-  it("schema/record-0.2.schema.json is for format darz-record-0.2", () => {
-    const schema = JSON.parse(readFileSync(new URL("../schema/record-0.2.schema.json", import.meta.url), "utf8"));
-    expect(schema.properties.format).toEqual({ const: "darz-record-0.2" });
+  it("schema/record-0.2.schema.json is byte for byte the file released in v0.2.0", () => {
+    const bytes = readFileSync(new URL("../schema/record-0.2.schema.json", import.meta.url));
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      "9813e15320312fd704eaf05a1e6ce1daf2b36dd8f43ea292ca1f0d5469fb07b9",
+    );
+  });
+
+  it("schema/record-0.3.schema.json is for format darz-record-0.3, with check 7 and the ref read", () => {
+    const schema = JSON.parse(readFileSync(new URL("../schema/record-0.3.schema.json", import.meta.url), "utf8"));
+    expect(schema.properties.format).toEqual({ const: "darz-record-0.3" });
+    expect(schema.required).toContain("ref");
+    expect(schema.definitions.check.properties.id.enum).toContain("lessons_hold");
   });
 });

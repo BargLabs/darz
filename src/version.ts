@@ -2,5 +2,5 @@
 // Copyright 2026 Barg Labs
 
 export const TOOL_NAME = "darz";
-export const TOOL_VERSION = "0.2.0";
-export const RECORD_FORMAT = "darz-record-0.2";
+export const TOOL_VERSION = "0.3.0";
+export const RECORD_FORMAT = "darz-record-0.3";

@@ -14,8 +14,10 @@ export const REASONS: Record<string, string> = {
   classic_protection_unreadable:
     "The branch is protected but classic branch protection could not be read; reading it needs repository administration access.",
 
-  tree_unreadable: "The repository tree at the default branch's head could not be read.",
-  tree_truncated: "GitHub truncated the tree response, so the gate-file inventory is incomplete.",
+  tree_unreadable:
+    "The repository tree could not be read: at the default branch's head, or for check 7 at the commit --ref names.",
+  tree_truncated:
+    "GitHub truncated the tree response, so the list of files is incomplete: the gate-file inventory, or for check 7 the files lessons check.",
   codeowners_unreadable: "A CODEOWNERS file could not be read, so which file GitHub uses is unknown.",
   codeowners_errors_unreadable: "GET /repos/{owner}/{repo}/codeowners/errors could not be read, so which lines GitHub ignores is unknown.",
   codeowners_error_ambiguous:
@@ -82,6 +84,19 @@ export const REASONS: Record<string, string> = {
     "A package.json, vite.config.*, pyproject.toml or setup.cfg that an agent pull request changed could not be read or parsed as it was at the merge, so whether the pull request changed a gate file is unknown.",
   gate_candidates_at_merge_over_cap:
     "Agent pull requests changed more package.json, vite.config.*, pyproject.toml or setup.cfg files than Darz reads at merge commits, so for these pull requests whether they changed a gate file is unknown.",
+
+  no_lessons: "No lesson is in force on the default branch, so there is nothing to hold. No lessons is never a pass.",
+  lessons_unreadable: "The lessons directory, .github/darz/lessons on the default branch, or a lesson file in it could not be read.",
+  too_many_lessons: "The lessons directory holds more than the 100 lessons Darz reads in one run.",
+  lesson_invalid: "A file in the lessons directory is not a valid lesson (schema/lesson-0.1.schema.json), so what it asks is unknown.",
+  lesson_unapproved:
+    "The latest change to a lesson file was not approved, on its pull request's final commit, by a person who is neither the pull request's author nor an agent identity; or it was pushed with no pull request. A lesson changed without that approval is a breach of the gate, not a lesson dropped.",
+  lesson_approval_unreadable:
+    "Whether the latest change to a lesson file was approved could not be read: its latest commit, that commit's pull request, or the pull request's reviews.",
+  lesson_violated: "An approved lesson in force does not hold at the commit read.",
+  file_too_large: "A file a lesson checks is over 1 MiB, or has a line over 4,096 characters, so Darz did not scan it.",
+  lesson_read_cap: "The lessons in force check more than the 3,000 files Darz reads in one run.",
+  lesson_file_unreadable: "A file a lesson checks could not be read at the commit read.",
 };
 
 export function reason(code: string, subjects?: string[]): Reason {
