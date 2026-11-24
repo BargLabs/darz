@@ -210,7 +210,7 @@ export function checkGateFilesOwned(input, own) {
         context.push(`Gate files are owned by ${teamOwners.join(", ")}, reported as written; their members were not read.`);
     }
     if (own.ignored.length > 0) {
-        context.push(`GitHub reports ${own.ignored.length} CODEOWNERS line(s) as errors; they do not count as owners.`);
+        context.push(`GitHub reports ${own.ignored.length} CODEOWNERS line(s) as errors. Owners GitHub flags do not count; a line with an invalid owner or pattern is skipped.`);
     }
     const d = decide(fails, unknowns, ORDER_1);
     const details = {

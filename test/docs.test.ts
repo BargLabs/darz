@@ -13,6 +13,15 @@ import { repoFiles } from "./helpers/tree.js";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
+// Every action reference in `text`, and the ones not pinned to a full commit
+// SHA. `allow` names references that may stay unpinned, such as a placeholder.
+function actionRefs(text: string): string[] {
+  return [...text.matchAll(/\buses:\s*["']?([^\s"',}]+)/g)].map((m) => m[1] as string);
+}
+function unpinnedUses(text: string, allow: (ref: string) => boolean = () => false): string[] {
+  return actionRefs(text).filter((u) => !allow(u) && !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u));
+}
+
 describe("docs/checks.md", () => {
   const doc = read("docs/checks.md");
   it("documents every reason code the checks can give", () => {
@@ -26,6 +35,11 @@ describe("docs/checks.md", () => {
 
 describe("README", () => {
   const readme = read("README.md");
+  it("pins every action in its workflow examples to a full commit SHA", () => {
+    expect(actionRefs(readme).length).toBeGreaterThan(0);
+    expect(unpinnedUses(readme, (u) => u.startsWith("BargLabs/darz@<full"))).toEqual([]);
+  });
+
   it("documents the exit codes", () => {
     for (const code of ["`0`", "`1`", "`2`", "`3`"]) expect(readme).toContain(code);
   });
@@ -62,13 +76,20 @@ describe("action name", () => {
   });
 });
 
+describe("workflows", () => {
+  const workflows = repoFiles().filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f));
+  it("includes ci.yml", () => {
+    expect(workflows).toContain(".github/workflows/ci.yml");
+  });
+  it.each(workflows)("%s pins every action by full commit SHA", (f) => {
+    const text = read(f);
+    expect(actionRefs(text).length).toBeGreaterThan(0);
+    expect(unpinnedUses(text)).toEqual([]);
+  });
+});
+
 describe("CI", () => {
   const ci = read(".github/workflows/ci.yml");
-  it("pins every action by full commit SHA", () => {
-    const uses = [...ci.matchAll(/uses:\s*(\S+)/g)].map((m) => m[1] as string);
-    expect(uses.length).toBeGreaterThan(0);
-    for (const u of uses) expect(u).toMatch(/@[0-9a-f]{40}$/);
-  });
   it("reads contents only and has one job named test", () => {
     expect(ci).toMatch(/^permissions:\n {2}contents: read$/m);
     expect(ci).toMatch(/^jobs:\n {2}test:$/m);

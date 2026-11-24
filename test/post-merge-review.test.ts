@@ -186,22 +186,22 @@ describe("test-settings detection", () => {
 });
 
 describe("a flagged CODEOWNERS line whose handling is not verified stays ambiguous", () => {
-  it("valid owners on a partly flagged line could own the path, with no earlier owner", () => {
-    const f = parseCodeowners("/.github/ @alice @ghost\n", [{ line: 1, column: 18, kind: "Unknown owner" }]);
+  it("valid owners on a line flagged with no column could own the path, with no earlier owner", () => {
+    const f = parseCodeowners("/.github/ @alice @ghost\n", [{ line: 1, kind: "Unknown owner" }]);
     expect(ownersOf(f, ".github/workflows/ci.yml")).toEqual({ owners: [], line: 1, ambiguous: true });
   });
 
-  it("an all-unknown line before a partly flagged one does not make the result definite", () => {
+  it("an all-unknown line before an unverified one does not make the result definite", () => {
     const f = parseCodeowners("* @alice\n/probe/ @ghost\n/probe/a.txt @bob @ghost2\n", [
       { line: 2, column: 9, kind: "Unknown owner" },
-      { line: 3, column: 19, kind: "Unknown owner" },
+      { line: 3, kind: "Unknown owner" },
     ]);
     expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: [], line: 3, ambiguous: true });
   });
 
-  it("every owner flagged and no earlier owner: both readings leave the path unowned, so not ambiguous", () => {
+  it("every owner flagged with a kind not verified and no earlier owner: both readings leave the path unowned, so not ambiguous", () => {
     const f = parseCodeowners("/x/ @a @b\n", [
-      { line: 1, column: 5, kind: "Invalid owner" },
+      { line: 1, column: 5, kind: "Something new" },
       { line: 1, column: 8, kind: "Unknown owner" },
     ]);
     expect(ownersOf(f, "x/y")).toEqual({ owners: [], line: 1, ambiguous: false });
