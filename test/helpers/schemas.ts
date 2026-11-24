@@ -14,7 +14,7 @@ const addFormats = addFormatsModule.default;
 
 const here = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 
-const recordSchema = JSON.parse(readFileSync(here("../../schema/record-0.1.schema.json"), "utf8"));
+const recordSchema = JSON.parse(readFileSync(here("../../schema/record-0.2.schema.json"), "utf8"));
 // Source: https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json
 // (vendored unmodified; see test/vendor/SOURCE.md)
 const sarifSchema = JSON.parse(readFileSync(here("../vendor/sarif-schema-2.1.0.json"), "utf8"));

@@ -41,8 +41,15 @@ export function appLabel(id: AgentIdentity): string {
 
 export class IdentitySet {
   readonly #items: AgentIdentity[] = [];
+  /** Declared ids per app slug (lower case) when one slug was declared with different ids. */
+  readonly #conflicts = new Map<string, { slug: string; ids: Set<number> }>();
+  /** App slugs (lower case) named by a declaration, in a flag or `.github/darz.json`. */
+  readonly #declaredSlugs = new Set<string>();
+  /** Declared slugs per app id when two different declared slugs turned out to share it. */
+  readonly #shared = new Map<number, Map<string, string>>();
 
   add(kind: "user" | "app", name: string | null, appId: number | null, source: IdentitySource, foundIn: FoundIn) {
+    if (kind === "app" && name !== null && source === "declared") this.#declaredSlugs.add(name.toLowerCase());
     const existing = this.#items.find((i) => {
       if (i.kind !== kind) return false;
       if (kind === "user") return (i.login ?? "").toLowerCase() === (name ?? "").toLowerCase();
@@ -51,6 +58,12 @@ export class IdentitySet {
       return false;
     });
     if (existing) {
+      if (kind === "app" && name !== null && appId !== null && existing.appId !== undefined && existing.appId !== appId) {
+        const key = (existing.slug ?? name).toLowerCase();
+        const c = this.#conflicts.get(key) ?? { slug: existing.slug ?? name, ids: new Set([existing.appId]) };
+        c.ids.add(appId);
+        this.#conflicts.set(key, c);
+      }
       if (source === "declared") existing.source = "declared";
       if (!existing.foundIn.includes(foundIn)) existing.foundIn.push(foundIn);
       if (appId !== null && existing.appId === undefined) existing.appId = appId;
@@ -68,7 +81,11 @@ export class IdentitySet {
     else this.add("user", login, null, source, foundIn);
   }
 
-  /** Merge app entries that turned out to share an app id. */
+  /**
+   * Merge app entries that turned out to share an app id. The merged entry
+   * keeps the first slug. Two different declared slugs merged this way are
+   * recorded: one of them names no app, or a different one.
+   */
   mergeByAppId() {
     for (let i = 0; i < this.#items.length; i++) {
       const a = this.#items[i] as AgentIdentity;
@@ -76,6 +93,15 @@ export class IdentitySet {
       for (let j = this.#items.length - 1; j > i; j--) {
         const b = this.#items[j] as AgentIdentity;
         if (b.kind !== "app" || b.appId !== a.appId) continue;
+        if (a.slug !== undefined && b.slug !== undefined && a.slug.toLowerCase() !== b.slug.toLowerCase()) {
+          const declared = (x: string) => this.#declaredSlugs.has(x.toLowerCase());
+          if (declared(a.slug) && declared(b.slug)) {
+            const slugs = this.#shared.get(a.appId) ?? new Map<string, string>();
+            slugs.set(a.slug.toLowerCase(), a.slug);
+            slugs.set(b.slug.toLowerCase(), b.slug);
+            this.#shared.set(a.appId, slugs);
+          }
+        }
         if (b.source === "declared") a.source = "declared";
         if (!a.slug && b.slug) a.slug = b.slug;
         for (const f of b.foundIn) if (!a.foundIn.includes(f)) a.foundIn.push(f);
@@ -87,6 +113,37 @@ export class IdentitySet {
   list(): AgentIdentity[] {
     return this.#items;
   }
+
+  /**
+   * App slugs declared with more than one id. The identity keeps the first id,
+   * so which app is the agent is unknown; the checks report it.
+   */
+  appIdConflicts(): AppIdConflict[] {
+    return [...this.#conflicts.values()]
+      .map((c) => ({ slug: c.slug, ids: [...c.ids].sort((a, b) => a - b) }))
+      .sort((a, b) => (a.slug.toLowerCase() < b.slug.toLowerCase() ? -1 : 1));
+  }
+
+  /**
+   * App ids that two or more different declared slugs resolve to, after
+   * {@link mergeByAppId}. The identity keeps one slug, so a bot login under
+   * another may match no identity; the checks report it.
+   */
+  appSlugsSharingId(): AppSlugShare[] {
+    return [...this.#shared.entries()]
+      .map(([id, slugs]) => ({ id, slugs: [...slugs.values()].sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1)) }))
+      .sort((a, b) => a.id - b.id);
+  }
+}
+
+export interface AppIdConflict {
+  slug: string;
+  ids: number[];
+}
+
+export interface AppSlugShare {
+  id: number;
+  slugs: string[];
 }
 
 export interface DeclaredInput {

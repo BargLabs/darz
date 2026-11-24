@@ -7,11 +7,12 @@
  * any API: uploading darz.sarif to code scanning is a separate step in the
  * caller's workflow (github/codeql-action/upload-sarif).
  */
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { main } from "./cli.js";
 import { EXIT_MEANING } from "./exit.js";
+import { platformFetch } from "./github/platform-fetch.js";
 export const ACTION_INPUTS = [
     "repository",
     "token",
@@ -22,6 +23,7 @@ export const ACTION_INPUTS = [
     "out-dir",
     "api-url",
     "fail-on",
+    "graphql-ruleset-roles",
 ];
 /** Rows these reasons make unverifiable become readable with a token that has Administration: read. */
 const TOKEN_LIMITED = new Set(["classic_protection_unreadable", "bypass_list_unreadable", "collaborators_unreadable"]);
@@ -41,7 +43,11 @@ export function inputsToRun(env) {
         throw new Error(`fail-on must be fail, unverifiable or never, not "${failOn}"`);
     }
     const outDir = input(env, "out-dir") || "darz-out";
-    const argv = [input(env, "repository")];
+    const repository = input(env, "repository");
+    // argv[0] is the repository; a value that starts with "-" would be read as an option.
+    if (repository.startsWith("-"))
+        throw new Error(`repository must be owner/name, not "${repository}"`);
+    const argv = [repository];
     const apiUrl = input(env, "api-url");
     if (apiUrl)
         argv.push("--api-url", apiUrl);
@@ -50,6 +56,14 @@ export function inputsToRun(env) {
     if (merges)
         argv.push("--merges", merges);
     argv.push("--token-env", TOKEN_ENV);
+    // Case-insensitive, so a YAML `True` or `FALSE` reads as written.
+    const graphqlRaw = input(env, "graphql-ruleset-roles") || "false";
+    const graphql = graphqlRaw.toLowerCase();
+    if (graphql !== "true" && graphql !== "false") {
+        throw new Error(`graphql-ruleset-roles must be true or false, not "${graphqlRaw}"`);
+    }
+    if (graphql === "true")
+        argv.push("--graphql-ruleset-roles");
     for (const a of list(input(env, "agents")))
         argv.push("--agent", a);
     for (const a of list(input(env, "agent-apps")))
@@ -112,6 +126,13 @@ export async function runAction(io) {
         return 1;
     }
     const token = run.env[TOKEN_ENV];
+    const recordPath = join(run.outDir, "darz-record.json");
+    const shaPath = join(run.outDir, "darz-record.json.sha256");
+    const sarifPath = join(run.outDir, "darz.sarif");
+    // Remove this Action's own outputs from an earlier run in the same
+    // workspace, so a run that stops before writing cannot report them as its own.
+    for (const p of [recordPath, shaPath, sarifPath])
+        rmSync(p, { force: true });
     const darzExit = await main(run.argv, {
         env: run.env,
         fetch: io.fetch,
@@ -119,12 +140,10 @@ export async function runAction(io) {
         stderr: io.stderr,
         ...(io.now ? { now: io.now } : {}),
     });
-    const recordPath = join(run.outDir, "darz-record.json");
-    const shaPath = join(run.outDir, "darz-record.json.sha256");
-    const sarifPath = join(run.outDir, "darz.sarif");
     if (!existsSync(recordPath)) {
+        // No record means no check ran, whatever the exit code: the step fails.
         io.stdout(`::error title=Darz::darz exited ${darzExit} without writing a record\n`);
-        return actionExitCode(darzExit, run.failOn);
+        return 1;
     }
     const record = JSON.parse(readFileSync(recordPath, "utf8"));
     const sha256 = existsSync(shaPath) ? (readFileSync(shaPath, "utf8").split(/\s+/)[0] ?? "") : "";
@@ -165,15 +184,29 @@ export async function runAction(io) {
     }
     return actionExitCode(darzExit, run.failOn);
 }
-const isEntry = (() => {
-    const entry = process.argv[1];
-    return entry !== undefined && import.meta.url === pathToFileURL(entry).href;
-})();
-if (isEntry) {
-    const fetchOnce = (url, init) => fetch(url, { method: init.method, headers: init.headers, redirect: "manual" });
+/**
+ * Whether this module is the script Node was started with. Both paths are
+ * resolved through symlinks first: Node resolves the main module's real path
+ * for import.meta.url but leaves argv[1] as given, and a mismatch would make
+ * the step exit 0 without running any check.
+ */
+export function isEntryPoint(moduleUrl, argv1) {
+    if (argv1 === undefined)
+        return false;
+    const real = (p) => {
+        try {
+            return realpathSync(p);
+        }
+        catch {
+            return p;
+        }
+    };
+    return real(fileURLToPath(moduleUrl)) === real(argv1);
+}
+if (isEntryPoint(import.meta.url, process.argv[1])) {
     runAction({
         env: process.env,
-        fetch: fetchOnce,
+        fetch: platformFetch,
         stdout: (s) => process.stdout.write(s),
         stderr: (s) => process.stderr.write(s),
     }).then((code) => {

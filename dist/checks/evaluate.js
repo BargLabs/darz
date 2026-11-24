@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Barg Labs
 import { ownerKind, ownersOf, parseCodeowners } from "../codeowners.js";
-import { MAX_CANDIDATE_READS, gateFilesIn, isGatePathForChange } from "../gates.js";
-import { codeownersErrorsInUse, errorLines } from "../github/snapshot.js";
+import { MAX_CANDIDATE_READS, gateFilesIn, isCandidatePath, isGatePathForChange, probePaths, } from "../gates.js";
+import { codeownersErrorsInUse, errorLines, ownerType, } from "../github/snapshot.js";
 import { appLabel, identityName, matchLogin } from "../identities.js";
 import { pullRequestRequired, reviewSetting, statusChecks } from "../protection.js";
 import { ReasonList, reason } from "./reasons.js";
@@ -54,6 +54,7 @@ function ownership(input) {
     const out = {
         gateFiles: null,
         owners: null,
+        probes: new Map(),
         codeownersPath: null,
         ignored: [],
         candidatesWithoutTestSettings: [],
@@ -99,11 +100,18 @@ function ownership(input) {
             codeownersKnown = true;
         }
     }
+    // A probe's ownership depends only on its path, so probes are judged even
+    // when the tree is unknown; the tree only drops probes that exist.
+    if (file !== null && out.codeownersPath !== null && configKnown(snap)) {
+        const f = file;
+        for (const p of probePaths(input.gates, out.codeownersPath, treePaths))
+            out.probes.set(p, ownersOf(f, p));
+    }
     if (treePaths !== null && codeownersKnown && configKnown(snap)) {
         out.gateFiles = gateFilesIn(input.gates, treePaths);
         const cand = snap.candidates;
         if (cand.state === "over_cap") {
-            unknowns.add("gate_candidates_over_cap", `${cand.count} candidates; at most ${MAX_CANDIDATE_READS} are read`);
+            unknowns.add("gate_candidates_over_cap", `${cand.count} candidate files, ${cand.distinct} distinct; at most ${MAX_CANDIDATE_READS} distinct files are read`);
         }
         else if (cand.state === "read") {
             for (const c of cand.results)
@@ -125,6 +133,7 @@ function configKnown(snap) {
 }
 const ORDER_1 = [
     "gate_files_unowned",
+    "new_gate_paths_unowned",
     "no_codeowners_file",
     "code_owner_review_not_required",
     "tree_unreadable",
@@ -173,8 +182,24 @@ export function checkGateFilesOwned(input, own) {
             fails.add("no_codeowners_file");
         if (ambiguous.length > 0)
             unknowns.add("codeowners_error_ambiguous", ...ambiguous);
-        teamOwners = [...unresolved].sort();
+        teamOwners = [...unresolved];
     }
+    const unownedProbes = [];
+    const ambiguousProbes = [];
+    for (const [p, o] of own.probes) {
+        if (o.ambiguous)
+            ambiguousProbes.push(p);
+        else if (o.owners.length === 0)
+            unownedProbes.push(p);
+        for (const w of o.owners)
+            if (ownerKind(w) !== "user")
+                teamOwners.push(w);
+    }
+    if (unownedProbes.length > 0)
+        fails.add("new_gate_paths_unowned", ...unownedProbes);
+    if (ambiguousProbes.length > 0)
+        unknowns.add("codeowners_error_ambiguous", ...ambiguousProbes);
+    teamOwners = [...new Set(teamOwners)].sort();
     const cor = reviewSetting(snap, "codeOwnerReview");
     read.push(...cor.read);
     if (cor.value === false)
@@ -191,6 +216,7 @@ export function checkGateFilesOwned(input, own) {
     const details = {
         codeownersFile: own.codeownersPath,
         gateFiles: own.gateFiles,
+        probedPaths: [...own.probes.keys()],
         ignoredCodeownersLines: own.ignored,
         candidatesWithoutTestSettings: own.candidatesWithoutTestSettings,
     };
@@ -231,30 +257,58 @@ export function checkHumanReviewRequired(input) {
     const d = decide(fails, unknowns, ORDER_2);
     return makeRow("human_review_required", d.status, d.reasons, read);
 }
+function lookupWhy(r) {
+    if (!r)
+        return "not read";
+    if (r.state === "read")
+        return "no app id in the response";
+    return r.status === null ? r.state : `${r.state}, ${r.status}`;
+}
+function andList(items) {
+    return items.length <= 2 ? items.join(" and ") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
 /**
  * A declared app whose slug `GET /apps/{slug}` did not resolve: the slug may be
  * misspelt or the read failed, so every check about it may be about no app at all.
+ * A slug declared with two ids names no one app. A declared id that
+ * the lookup did not confirm still counts, and a context line says so.
+ * Two declared slugs with one id name one app at most: the identity keeps one
+ * slug, and a bot login under the other matches no identity.
  */
-function unresolvedApps(input, unknowns, read) {
+function unresolvedApps(input, unknowns, read, context) {
+    for (const c of input.appIdConflicts ?? []) {
+        unknowns.add("agent_app_ids_conflict", `${c.slug} (declared ${andList(c.ids)})`);
+    }
+    for (const s of input.appSlugsSharingId ?? []) {
+        unknowns.add("agent_app_slugs_share_id", `${andList(s.slugs)} (id ${s.id})`);
+    }
     for (const id of input.identities) {
         if (id.kind !== "app" || id.source !== "declared" || id.slug === undefined)
             continue;
         const r = input.appLookups.get(id.slug.toLowerCase());
         if (id.appId !== undefined) {
             // The id is declared, or resolved by the lookup. If the lookup was read and
-            // names a different app, the declaration and GitHub disagree (issue 30).
+            // names a different app, the declaration and GitHub disagree.
             const found = r?.state === "read" ? r.data?.id : undefined;
             if (typeof found === "number" && found !== id.appId) {
                 if (r)
                     read.push(`GET ${r.endpoint}`);
                 unknowns.add("agent_app_id_mismatch", `${id.slug} (declared ${id.appId}, GitHub says ${found})`);
             }
+            else if (typeof found !== "number") {
+                // No successful lookup gave this id, so it is the declared one.
+                if (r)
+                    read.push(`GET ${r.endpoint}`);
+                const endpoint = r ? r.endpoint : `/apps/${encodeURIComponent(id.slug)}`;
+                const line = `Agent app ${id.slug}: id ${id.appId} is as declared; GET ${endpoint} did not confirm it (${lookupWhy(r)}).`;
+                if (!context.includes(line))
+                    context.push(line);
+            }
             continue;
         }
         if (r)
             read.push(`GET ${r.endpoint}`);
-        const why = !r ? "not read" : r.state === "read" ? "no app id in the response" : r.status === null ? r.state : `${r.state}, ${r.status}`;
-        unknowns.add("agent_app_unresolved", `${id.slug} (${why})`);
+        unknowns.add("agent_app_unresolved", `${id.slug} (${lookupWhy(r)})`);
     }
 }
 /**
@@ -282,6 +336,8 @@ const ORDER_3 = [
     "unresolved_owners",
     "agent_app_unresolved",
     "agent_app_id_mismatch",
+    "agent_app_ids_conflict",
+    "agent_app_slugs_share_id",
     "config_invalid",
     "config_unreadable",
     "rules_unreadable",
@@ -296,8 +352,11 @@ export function checkWriterNotApprover(input, own) {
     const fails = new ReasonList();
     const unknowns = new ReasonList();
     const read = [...own.read];
+    const context = [
+        "GitHub never counts a pull request author's own approval toward required reviews; that is GitHub's behaviour, not this check.",
+    ];
     configUnknown(snap, unknowns, read);
-    unresolvedApps(input, unknowns, read);
+    unresolvedApps(input, unknowns, read, context);
     own.unknowns.list().forEach((r) => unknowns.add(r.code, ...(r.subjects ?? [])));
     const lp = reviewSetting(snap, "lastPushApproval");
     read.push(...lp.read);
@@ -306,11 +365,11 @@ export function checkWriterNotApprover(input, own) {
     else if (lp.value === null)
         addSettingUnknown(unknowns, lp);
     const hasUserAgent = identities.some((i) => i.kind === "user");
-    if (own.owners !== null) {
+    if (own.owners !== null || own.probes.size > 0) {
         const byAgent = new Map();
         const unresolved = new Set();
         const ambiguous = [];
-        for (const [f, o] of own.owners) {
+        for (const [f, o] of [...(own.owners ?? []), ...own.probes]) {
             if (o.ambiguous) {
                 ambiguous.push(f);
                 continue;
@@ -336,15 +395,13 @@ export function checkWriterNotApprover(input, own) {
         if (unresolved.size > 0 && hasUserAgent)
             unknowns.add("unresolved_owners", ...[...unresolved].sort());
     }
-    const context = [
-        "GitHub never counts a pull request author's own approval toward required reviews; that is GitHub's behaviour, not this check.",
-    ];
     const d = decide(fails, unknowns, ORDER_3);
     return makeRow("writer_not_approver", d.status, d.reasons, read, context);
 }
 const LEVELS = ["read", "triage", "write", "maintain", "admin"];
 const ORDER_4 = [
     "agent_app_can_bypass",
+    "agent_app_can_administer",
     "agent_role_can_bypass",
     "agent_is_admin",
     "admins_not_enforced_agent_is_admin",
@@ -353,6 +410,8 @@ const ORDER_4 = [
     "ruleset_unreadable",
     "bypass_list_unreadable",
     "bypass_role_unknown",
+    "bypass_role_inheritance_unknown",
+    "bypass_role_order_unknown",
     "bypass_actor_unknown",
     "team_bypass_members_unread",
     "collaborators_unreadable",
@@ -360,6 +419,8 @@ const ORDER_4 = [
     "field_missing",
     "agent_app_unresolved",
     "agent_app_id_mismatch",
+    "agent_app_ids_conflict",
+    "agent_app_slugs_share_id",
     "config_invalid",
     "config_unreadable",
 ];
@@ -373,10 +434,12 @@ export function checkAgentsCannotBypass(input) {
     const read = [];
     const context = [];
     configUnknown(snap, unknowns, read);
-    unresolvedApps(input, unknowns, read);
+    unresolvedApps(input, unknowns, read, context);
     const hasUserAgent = identities.some((i) => i.kind === "user");
     // Agent permission levels, from the collaborators list.
     const levels = new Map();
+    /** Each agent collaborator's role_name, which may be a custom role. */
+    const roleNames = new Map();
     let collaboratorsKnown = false;
     if (snap.collaborators)
         read.push(`GET ${snap.collaborators.endpoint}`);
@@ -391,6 +454,8 @@ export function checkAgentsCannotBypass(input) {
             if (!agent)
                 continue;
             levels.set(agent, levelOf(c));
+            if (typeof c.role_name === "string" && c.role_name.length > 0)
+                roleNames.set(agent, c.role_name);
         }
     }
     else {
@@ -402,6 +467,8 @@ export function checkAgentsCannotBypass(input) {
     });
     if (snap.rules)
         read.push(`GET ${snap.rules.endpoint}`);
+    if (input.rulesetRoles)
+        read.push(input.rulesetRoles.endpoint);
     if (snap.rules?.state !== "read")
         unknowns.add("rules_unreadable");
     else {
@@ -416,6 +483,10 @@ export function checkAgentsCannotBypass(input) {
                 unknowns.add("bypass_list_unreadable", `ruleset ${id}`);
                 continue;
             }
+            // Looked up only when a role bypass needs a name, so the row's context
+            // speaks of role names only where they could have changed its answer.
+            let cached;
+            const names = () => (cached ??= { names: roleNamesFor(input, id, actors, context) }).names;
             for (const a of actors) {
                 const where = `ruleset ${id}`;
                 switch (a.actor_type) {
@@ -427,7 +498,7 @@ export function checkAgentsCannotBypass(input) {
                     }
                     case "RepositoryRole": {
                         // GitHub does not document which actor_id is which built-in
-                        // repository role (issue 4), so Darz cannot tell whether a role
+                        // repository role, so Darz cannot tell whether a role
                         // bypass covers an agent's permission. Any agent that holds a
                         // repository permission might hold the role, so the row cannot pass.
                         if (!collaboratorsKnown)
@@ -436,18 +507,40 @@ export function checkAgentsCannotBypass(input) {
                             const l = levels.get(i);
                             return l !== undefined && l !== null;
                         });
-                        if (holders.length > 0) {
+                        if (holders.length === 0)
+                            break;
+                        // With --graphql-ruleset-roles, GitHub names the role. Without it, or
+                        // when that read could not be matched to REST's, the role is unknown.
+                        const roleName = typeof a.actor_id === "number" ? names()?.get(a.actor_id) : undefined;
+                        if (roleName === undefined) {
                             const who = holders.map((h) => `${identityName(h)} has ${levels.get(h)}`).join(", ");
                             unknowns.add("bypass_role_unknown", `role id ${a.actor_id} on ${where}; ${who}`);
+                            break;
+                        }
+                        const roleLevel = builtinLevel(roleName);
+                        for (const h of holders) {
+                            const agentRole = roleNames.get(h) ?? levels.get(h);
+                            const agentLevel = builtinLevel(agentRole);
+                            if (agentRole.toLowerCase() === roleName.toLowerCase()) {
+                                fails.add("agent_role_can_bypass", `${identityName(h)} holds the ${roleName} role, which can bypass ${where}`);
+                            }
+                            else if (roleLevel !== null && agentLevel !== null) {
+                                // A lower role does not hold a higher one. Whether a role's bypass
+                                // covers the roles above it is not documented.
+                                if (LEVELS.indexOf(agentLevel) > LEVELS.indexOf(roleLevel)) {
+                                    unknowns.add("bypass_role_inheritance_unknown", `${identityName(h)} has ${agentRole}; the ${roleName} role can bypass ${where}`);
+                                }
+                            }
+                            else {
+                                unknowns.add("bypass_role_order_unknown", `role ${roleName} on ${where}; ${identityName(h)} has ${agentRole}`);
+                            }
                         }
                         break;
                     }
                     case "OrganizationAdmin": {
                         if (!collaboratorsKnown)
                             break;
-                        for (const agent of atLeast("admin")) {
-                            fails.add("agent_role_can_bypass", `${identityName(agent)} (admin) is covered by organisation admin bypass on ${where}`);
-                        }
+                        orgAdminCoverage(input, where, atLeast("admin"), fails, read, context);
                         break;
                     }
                     case "Team":
@@ -485,7 +578,7 @@ export function checkAgentsCannotBypass(input) {
         const reviews = c.data.required_pull_request_reviews;
         if (reviews) {
             // GitHub leaves bypass_pull_request_allowances out when there are none
-            // (issue 3, seen on a live repository); a value of another shape is unknown.
+            // (seen on a live repository); a value of another shape is unknown.
             const allow = reviews.bypass_pull_request_allowances;
             if (allow !== undefined && (allow === null || typeof allow !== "object")) {
                 unknowns.add("field_missing", "classic.required_pull_request_reviews.bypass_pull_request_allowances");
@@ -509,9 +602,236 @@ export function checkAgentsCannotBypass(input) {
             }
         }
     }
-    context.push("GitHub App installation permissions (for example administration: write) are not readable with a user token and were not checked.");
+    installationPermissions(input, fails, unknowns, read, context);
     const d = decide(fails, unknowns, ORDER_4);
     return makeRow("agents_cannot_bypass", d.status, d.reasons, read, context);
+}
+/**
+ * Installation permissions that let an app change what protects the default
+ * branch. administration: write edits and deletes repository rulesets and
+ * classic branch protection, and sets collaborators' roles;
+ * organization_administration: write edits and deletes organisation rulesets.
+ * GitHub's "Permissions required for GitHub Apps" lists those endpoints under
+ * these two permissions.
+ */
+const ADMINISTER_PERMISSIONS = {
+    administration: ["write"],
+    organization_administration: ["write"],
+};
+/**
+ * Permissions that can move a repository out of an organisation ruleset that
+ * selects repositories by custom property. Whether one does depends on the
+ * ruleset's conditions, which Darz does not judge, so these are context.
+ */
+const PROPERTY_PERMISSIONS = {
+    repository_custom_properties: ["write"],
+    organization_custom_properties: ["write", "admin"],
+};
+const INSTALLATIONS_NOT_CHECKED = "GitHub App installation permissions of agent apps were not checked";
+/**
+ * Check 4: an agent app whose installation can administer the
+ * repository or the organisation can remove the rules that bind it.
+ *
+ * The list is readable only with an organisation owner's token, or
+ * organisation Administration: read. The GitHub Actions workflow token never
+ * can, and no user token can read a personal account's installations. When it
+ * cannot be read, a context line says so and the row is decided as it would be
+ * without it: a reason would make check 4 unverifiable on every run with the
+ * default token.
+ *
+ * An installation on selected repositories is taken to cover this one: an
+ * agent app acts on this repository, which it can do only if installed on it.
+ */
+function installationPermissions(input, fails, unknowns, read, context) {
+    const apps = input.identities.filter((i) => i.kind === "app");
+    if (apps.length === 0)
+        return;
+    const org = input.snap.owner;
+    const type = ownerType(input.snap);
+    if (type === "User") {
+        context.push(`${INSTALLATIONS_NOT_CHECKED}: the repository is owned by a user, and a user's installations can be read only with a GitHub App's own credentials.`);
+        return;
+    }
+    if (type === null) {
+        context.push(`${INSTALLATIONS_NOT_CHECKED}: the repository owner's account type was not read.`);
+        return;
+    }
+    const r = input.orgInstallations;
+    if (!r) {
+        context.push(`${INSTALLATIONS_NOT_CHECKED}: GET /orgs/${org}/installations was not read.`);
+        return;
+    }
+    read.push(`GET ${r.endpoint}`);
+    if (r.state !== "read") {
+        const why = r.status === null ? r.state : `${r.state}, ${r.status}`;
+        context.push(`${INSTALLATIONS_NOT_CHECKED}: GET ${r.endpoint} was ${why}. Reading it needs an organisation owner's token, or organisation Administration: read; the GitHub Actions workflow token cannot.`);
+        return;
+    }
+    const installations = r.data ?? [];
+    for (const agent of apps) {
+        const name = agent.slug ?? `id ${agent.appId}`;
+        const inst = installations.find((i) => agent.appId !== undefined
+            ? i?.app_id === agent.appId
+            : agent.slug !== undefined && typeof i?.app_slug === "string" && i.app_slug.toLowerCase() === agent.slug.toLowerCase());
+        if (!inst) {
+            pushOnce(context, `Agent app ${name} has no installation on organisation ${org}, so it holds no installation permissions on this repository.`);
+            continue;
+        }
+        const perms = inst.permissions;
+        if (typeof perms !== "object" || perms === null || Array.isArray(perms)) {
+            unknowns.add("field_missing", `installations[${agent.appId !== undefined ? `app_id=${agent.appId}` : `app_slug=${agent.slug}`}].permissions`);
+            continue;
+        }
+        const where = `installation ${inst.id ?? "?"}, repository_selection ${inst.repository_selection ?? "?"}`;
+        for (const [perm, levels] of Object.entries(ADMINISTER_PERMISSIONS)) {
+            const level = perms[perm];
+            if (typeof level === "string" && levels.includes(level)) {
+                fails.add("agent_app_can_administer", `${appLabel(agent)}: ${perm}: ${level} (${where})`);
+            }
+        }
+        for (const [perm, levels] of Object.entries(PROPERTY_PERMISSIONS)) {
+            const level = perms[perm];
+            if (typeof level === "string" && levels.includes(level)) {
+                pushOnce(context, `Agent app ${name}'s installation has ${perm}: ${level}. An organisation ruleset that selects repositories by custom property could stop applying to this repository if its property values change; Darz does not judge this.`);
+            }
+        }
+    }
+}
+function pushOnce(lines, line) {
+    if (!lines.includes(line))
+        lines.push(line);
+}
+/**
+ * An OrganizationAdmin bypass covers the owners of the organisation that owns
+ * the repository, not every repository admin. Only a person can be
+ * an owner: an app agent is never covered. GitHub says the actor
+ * type is not applicable for personal repositories.
+ *
+ * Every agent passed here has admin permission, so the row already fails with
+ * agent_is_admin. An unknown membership is therefore a context line: an
+ * unverifiable reason could never show beside a fail. Coverage is claimed
+ * only when GitHub says the agent is an active owner.
+ */
+function orgAdminCoverage(input, where, admins, fails, read, context) {
+    const org = input.snap.owner;
+    const type = ownerType(input.snap);
+    if (type === "User") {
+        pushOnce(context, `OrganizationAdmin can bypass ${where}; GitHub says that actor type is not applicable for personal repositories, so it covers no agent.`);
+        return;
+    }
+    for (const agent of admins) {
+        if (agent.kind !== "user" || agent.login === undefined)
+            continue;
+        const name = identityName(agent);
+        const r = type === "Organization" ? input.orgMemberships?.get(agent.login.toLowerCase()) : undefined;
+        if (r)
+            read.push(`GET ${r.endpoint}`);
+        const role = r?.state === "read" ? r.data?.role : undefined;
+        const state = r?.state === "read" ? r.data?.state : undefined;
+        if (typeof role === "string" && typeof state === "string") {
+            if (role === "admin" && state === "active") {
+                fails.add("agent_role_can_bypass", `${name} is an organisation owner, covered by organisation admin bypass on ${where}`);
+            }
+            else {
+                pushOnce(context, `${name} is a repository admin but not an owner of organisation ${org}, so the organisation admin bypass on ${where} does not cover it.`);
+            }
+            continue;
+        }
+        let why;
+        if (type === null)
+            why = "the repository owner's account type was not read";
+        else if (!r)
+            why = `GET /orgs/${org}/memberships/${agent.login} was not read`;
+        else if (r.state === "read")
+            why = `GET ${r.endpoint} gave no role or state`;
+        else
+            why = `GET ${r.endpoint} was ${r.status === null ? r.state : `${r.state}, ${r.status}`}`;
+        if (r?.status === 404)
+            why += "; GitHub answers 404 both for a user who is not a member and for a membership the token cannot see";
+        pushOnce(context, `Whether ${name} is an owner of organisation ${org}, and so covered by the organisation admin bypass on ${where}, is unknown: ${why}. The row fails on agent_is_admin either way.`);
+    }
+}
+/**
+ * The admin user agents whose organisation membership check 4 needs: the
+ * repository belongs to an organisation, the effective rules and the
+ * collaborators list were read, and a ruleset that was read names an
+ * OrganizationAdmin bypass actor. Logins as the collaborators list spells them.
+ */
+export function orgMembershipLogins(snap, identities) {
+    if (ownerType(snap) !== "Organization")
+        return [];
+    if (snap.rules?.state !== "read" || snap.collaborators?.state !== "read")
+        return [];
+    const orgAdmin = [...snap.rulesets.values()].some((rs) => rs.state === "read" &&
+        Array.isArray(rs.data?.bypass_actors) &&
+        rs.data.bypass_actors.some((a) => a?.actor_type === "OrganizationAdmin"));
+    if (!orgAdmin)
+        return [];
+    const out = new Map();
+    for (const c of snap.collaborators.data ?? []) {
+        if (typeof c.login !== "string")
+            continue;
+        const agent = matchLogin(identities, c.login);
+        if (agent?.kind === "user" && levelOf(c) === "admin")
+            out.set(c.login.toLowerCase(), c.login);
+    }
+    return [...out.values()].sort();
+}
+/**
+ * Whether check 4 could use ruleset role names from GraphQL: the effective
+ * rules were read, a ruleset that was read names a repository role as a
+ * bypass actor, and an agent identity holds a repository permission in the
+ * collaborators list that was read. Otherwise check 4 decides without names,
+ * and the opt-in GraphQL read is not sent.
+ */
+export function roleNamesCanMatter(snap, identities) {
+    if (snap.rules?.state !== "read" || snap.collaborators?.state !== "read")
+        return false;
+    const roleBypass = [...snap.rulesets.values()].some((rs) => rs.state === "read" &&
+        Array.isArray(rs.data?.bypass_actors) &&
+        rs.data.bypass_actors.some((a) => a?.actor_type === "RepositoryRole"));
+    if (!roleBypass)
+        return false;
+    return (snap.collaborators.data ?? []).some((c) => typeof c.login === "string" && matchLogin(identities, c.login) !== undefined && levelOf(c) !== null);
+}
+/**
+ * The role names GraphQL gives for one ruleset's repository-role bypass
+ * actors, keyed by REST's actor_id; undefined when they cannot be used.
+ *
+ * GitHub does not document that GraphQL's repositoryRoleDatabaseId is REST's
+ * actor_id. So the names are used only when the ruleset's GraphQL role ids are
+ * exactly its REST role actor_ids: a ruleset where the two lists differ is
+ * unknown, never matched by a wrong name. When the reader ran and its names
+ * are not used, a context line says why.
+ */
+function roleNamesFor(input, id, actors, context) {
+    const rest = actors.filter((a) => a.actor_type === "RepositoryRole");
+    if (!input.rulesetRoles || rest.length === 0)
+        return undefined;
+    const note = (why) => {
+        const line = `Role names from --graphql-ruleset-roles were not used for ruleset ${id}: ${why}.`;
+        if (!context.includes(line))
+            context.push(line);
+        return undefined;
+    };
+    const roles = input.rulesetRoles.roles;
+    if (roles === null)
+        return note("the GraphQL read failed or was incomplete");
+    const named = roles.get(id);
+    if (named === undefined)
+        return note("the GraphQL read did not return it");
+    if (named === null)
+        return note("its GraphQL bypass actors were not fully read");
+    const restIds = new Set(rest.map((a) => a.actor_id));
+    const same = restIds.size === named.size && [...restIds].every((x) => typeof x === "number" && named.has(x));
+    if (!same)
+        return note("its role ids in GraphQL and REST differ");
+    return named;
+}
+/** A built-in repository role by name, case-insensitive; null for a custom role. */
+function builtinLevel(name) {
+    const n = name.toLowerCase();
+    return LEVELS.includes(n) ? n : null;
 }
 function levelOf(c) {
     const p = c.permissions;
@@ -542,6 +862,7 @@ export function checkRequiredChecks(input) {
     const fails = new ReasonList();
     const unknowns = new ReasonList();
     const read = [...sc.read];
+    const context = [];
     const unknownCauses = () => {
         for (const c of sc.causes) {
             if (c === "field_missing")
@@ -567,6 +888,15 @@ export function checkRequiredChecks(input) {
             fails.add("required_check_unpinned", ...unpinned);
         if (sc.incomplete)
             unknownCauses();
+        // A pinned check could be pinned to an agent app that Darz cannot name:
+        // none is known, a declared app's id is unknown or contradicted, or the
+        // config that declares them could not be used. Then the row cannot pass.
+        if (sc.checks.some((c) => c.appIds.length > 0)) {
+            if (input.identities.length === 0)
+                unknowns.add("no_agent_identities");
+            configUnknown(input.snap, unknowns, read);
+            unresolvedApps(input, unknowns, read, context);
+        }
     }
     const d = decide(fails, unknowns, [
         "no_required_checks",
@@ -575,9 +905,16 @@ export function checkRequiredChecks(input) {
         "rules_unreadable",
         "classic_protection_unreadable",
         "field_missing",
+        "no_agent_identities",
+        "agent_app_unresolved",
+        "agent_app_id_mismatch",
+        "agent_app_ids_conflict",
+        "agent_app_slugs_share_id",
+        "config_invalid",
+        "config_unreadable",
     ]);
     const details = { requiredChecks: sc.checks, mustBeUpToDate: sc.strict === null ? "unknown" : sc.strict };
-    return makeRow("required_checks_fail_closed", d.status, d.reasons, read, [], details);
+    return makeRow("required_checks_fail_closed", d.status, d.reasons, read, context, details);
 }
 /** GitHub's list of a pull request's files stops at 3,000 entries without saying so. */
 export const PULL_REQUEST_FILES_CAP = 3000;
@@ -588,15 +925,20 @@ export function checkAgentMerges(input) {
         return empty;
     const unknowns = new ReasonList();
     const read = [];
+    const context = ["Counts and links only; no judgement of intent."];
     configUnknown(snap, unknowns, read);
-    unresolvedApps(input, unknowns, read);
+    unresolvedApps(input, unknowns, read, context);
     const m = snap.merges;
     if (m.pulls)
-        read.push(`GET ${m.pulls.endpoint}`);
+        read.push(...(m.pulls.pageEndpoints ?? [m.pulls.endpoint]).map((e) => `GET ${e}`));
     if (m.pulls?.state !== "read") {
         unknowns.add("merges_unreadable");
         const d = decide(new ReasonList(), unknowns, ["merges_unreadable", "agent_app_unresolved"]);
-        return makeRow("agent_merges_touching_gates", d.status, d.reasons, read);
+        return makeRow("agent_merges_touching_gates", d.status, d.reasons, read, context);
+    }
+    if (m.pulls.capped) {
+        const n = m.requested === 1 ? "1 merged pull request" : `${m.requested} merged pull requests`;
+        unknowns.add("merges_incomplete", `${m.pulls.pages ?? m.pageCap} pages read, the cap for ${n}`);
     }
     const prs = [];
     for (const p of m.merged) {
@@ -606,24 +948,47 @@ export function checkAgentMerges(input) {
         const n = p.number;
         const detail = input.pullDetails.get(n);
         let gateFilesChanged = null;
+        let candidatesUnknown = null;
         let approvers = null;
         let fileListTruncated = false;
         if (detail) {
             read.push(`GET ${detail.files.endpoint}`, `GET ${detail.reviews.endpoint}`);
             if (detail.files.state === "read") {
                 const changed = new Set();
+                const unknown = new Set();
                 const list = detail.files.data ?? [];
                 if (list.length >= PULL_REQUEST_FILES_CAP) {
                     fileListTruncated = true;
                     unknowns.add("pull_request_files_truncated", `#${n}`);
                 }
+                const mc = input.mergeCandidates.get(n);
+                if (mc?.state === "read")
+                    read.push(...mc.endpoints);
                 for (const f of list) {
                     for (const path of [f.filename, f.previous_filename]) {
-                        if (typeof path === "string" && isGatePathForChange(input.gates, path))
+                        if (typeof path !== "string")
+                            continue;
+                        if (isGatePathForChange(input.changeGates, path))
                             changed.add(path);
+                        else if (isCandidatePath(path)) {
+                            // A candidate is a gate file if it held test settings at the merge.
+                            if (mc?.state === "over_cap") {
+                                unknown.add(path);
+                                unknowns.add("gate_candidates_at_merge_over_cap", `#${n}`);
+                                continue;
+                            }
+                            const c = mc?.state === "read" ? mc.results.find((x) => x.path === path) : undefined;
+                            if (c?.state === "gate")
+                                changed.add(path);
+                            else if (c?.state !== "not_gate") {
+                                unknown.add(path);
+                                unknowns.add("gate_candidate_at_merge_unreadable", `#${n}: ${path} (${c?.why ?? "not read"})`);
+                            }
+                        }
                     }
                 }
                 gateFilesChanged = [...changed].sort();
+                candidatesUnknown = [...unknown].sort();
             }
             else
                 unknowns.add("pull_request_files_unreadable", `#${n}`);
@@ -641,11 +1006,11 @@ export function checkAgentMerges(input) {
             author: login,
             mergedAt: p.merged_at ?? null,
             gateFilesChanged,
+            candidatesUnknown,
             fileListTruncated,
             approvers,
         });
     }
-    const context = ["Counts and links only; no judgement of intent."];
     if (m.merged.length < m.requested) {
         context.push(`${m.merged.length} merged pull requests were read; ${m.requested} were requested.`);
     }
@@ -659,11 +1024,16 @@ export function checkAgentMerges(input) {
     const status = unknowns.size > 0 ? "unverifiable" : "context";
     const reasons = unknowns.list([
         "merges_unreadable",
+        "merges_incomplete",
         "pull_request_files_unreadable",
         "pull_request_files_truncated",
+        "gate_candidate_at_merge_unreadable",
+        "gate_candidates_at_merge_over_cap",
         "pull_request_reviews_unreadable",
         "agent_app_unresolved",
         "agent_app_id_mismatch",
+        "agent_app_ids_conflict",
+        "agent_app_slugs_share_id",
         "config_invalid",
         "config_unreadable",
     ]);

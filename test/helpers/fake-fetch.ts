@@ -13,9 +13,11 @@ export interface FakeCall {
   url: string;
   method: string;
   headers: Record<string, string>;
+  body?: string;
 }
 
-export type Routes = Record<string, FakeResponse>;
+/** A route answers with a fixed response, or with one computed from the call (for POST bodies). */
+export type Routes = Record<string, FakeResponse | ((call: FakeCall) => FakeResponse)>;
 
 /**
  * A fetch stand-in that answers from hand-written fixtures shaped like
@@ -24,11 +26,14 @@ export type Routes = Record<string, FakeResponse>;
  */
 export function fakeFetch(routes: Routes, apiUrl = API) {
   const calls: FakeCall[] = [];
-  const fn = async (url: string, init: { method: string; headers: Record<string, string> }) => {
-    calls.push({ url, method: init.method, headers: { ...init.headers } });
+  const fn = async (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
+    const call: FakeCall = { url, method: init.method, headers: { ...init.headers } };
+    if (init.body !== undefined) call.body = init.body;
+    calls.push(call);
     const key = url.startsWith(apiUrl) ? url.slice(apiUrl.length) : url;
     const route = routes[key];
-    const res: FakeResponse = route ?? { status: 404, body: { message: "Not Found" } };
+    const res: FakeResponse =
+      typeof route === "function" ? route(call) : (route ?? { status: 404, body: { message: "Not Found" } });
     const headers = new Map<string, string>(
       Object.entries(res.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]),
     );

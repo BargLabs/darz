@@ -15,8 +15,18 @@ export interface CodeownersRule {
   line: number;
   pattern: string;
   owners: string[];
-  /** GitHub reported an error on this line; its owners do not count. */
+  /**
+   * GitHub reported an error on this line and how it handles the line is not
+   * verified; its owners do not count. A line whose every owner GitHub reports
+   * as unknown is verified (it applies with no owner) and is not errored.
+   */
   errored: boolean;
+  /**
+   * On an errored line, the owners GitHub did not flag by column: if GitHub
+   * applies the line with them, they own its paths. Every owner when an error
+   * has no column, since then which owner it is about is unknown.
+   */
+  unflaggedOwners?: string[];
   regex: RegExp;
 }
 
@@ -30,9 +40,12 @@ export interface Ownership {
   /** The line of the last matching pattern, or null when nothing matches. */
   line: number | null;
   /**
-   * True when the last match is a line GitHub reported as an error and an
-   * earlier line would own the path. GitHub's handling of such a line is not
-   * something Darz can read, so the path is neither owned nor clearly unowned.
+   * True when the last match is a line GitHub reported as an error, and the
+   * path would have an owner under one reading of it: the line applies with
+   * its unflagged owners, or it is ignored and an earlier line owns the path.
+   * GitHub's handling of such a line is not something Darz can read, so the
+   * path is neither owned nor clearly unowned. When both readings leave it
+   * with no owner, it is unowned.
    */
   ambiguous: boolean;
 }
@@ -107,7 +120,7 @@ export function parseCodeowners(text: string, errors: readonly CodeownersErrorRe
       return;
     }
     ignoredLines.push({ line: lineNo, source: line });
-    // Verified (issue 5, in a scratch repository): when every owner on a
+    // Verified in a scratch repository: when every owner on a
     // line is reported as an unknown owner, GitHub still applies the line and
     // the path has no code owner. Any other case is not verified: ambiguous.
     const flagged = new Set(
@@ -117,8 +130,15 @@ export function parseCodeowners(text: string, errors: readonly CodeownersErrorRe
       ownerTokens.length > 0 &&
       lineErrors.every((e) => e.kind === UNKNOWN_OWNER && typeof e.column === "number") &&
       ownerTokens.every((t) => flagged.has(t.column));
-    if (allUnknown) rules.push({ line: lineNo, pattern, owners: [], errored: false, regex: codeownersRegex(pattern) });
-    else rules.push({ line: lineNo, pattern, owners, errored: true, regex: codeownersRegex(pattern) });
+    if (allUnknown) {
+      rules.push({ line: lineNo, pattern, owners: [], errored: false, regex: codeownersRegex(pattern) });
+      return;
+    }
+    const columns = new Set(lineErrors.map((e) => e.column));
+    const unflaggedOwners = columns.has(undefined)
+      ? owners
+      : ownerTokens.filter((t) => !columns.has(t.column)).map((t) => t.text);
+    rules.push({ line: lineNo, pattern, owners, errored: true, unflaggedOwners, regex: codeownersRegex(pattern) });
   });
   return { rules, ignoredLines };
 }
@@ -128,14 +148,13 @@ export function ownersOf(file: CodeownersFile, path: string): Ownership {
     const rule = file.rules[i] as CodeownersRule;
     if (!rule.regex.test(path)) continue;
     if (!rule.errored) return { owners: [...rule.owners], line: rule.line, ambiguous: false };
-    let ambiguous = false;
-    for (let j = i - 1; j >= 0; j--) {
-      const earlier = file.rules[j] as CodeownersRule;
-      if (earlier.errored || !earlier.regex.test(path)) continue;
-      ambiguous = earlier.owners.length > 0;
-      break;
-    }
-    return { owners: [], line: rule.line, ambiguous };
+    // Reading one: GitHub applies the line with the owners it did not flag.
+    if ((rule.unflaggedOwners ?? []).length > 0) return { owners: [], line: rule.line, ambiguous: true };
+    // Reading two: GitHub ignores the line, and the last earlier match applies.
+    // That match may itself be errored, so it is read the same way.
+    const before: CodeownersFile = { ...file, rules: file.rules.slice(0, i) };
+    const earlier = ownersOf(before, path);
+    return { owners: [], line: rule.line, ambiguous: earlier.owners.length > 0 || earlier.ambiguous };
   }
   return { owners: [], line: null, ambiguous: false };
 }

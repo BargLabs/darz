@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Barg Labs
 
-// Issue 30: a private agent App's slug may not resolve with the token Darz
+// A private agent App's slug may not resolve with the token Darz
 // reads with (the workflow token could not read GET /apps/{slug} for a
 // private App). An app can be declared with its id, so no lookup is needed.
 // When the lookup does resolve and disagrees with the declared id, the rows
@@ -25,7 +25,7 @@ function withConfig(config: unknown): Fixture {
   return fx;
 }
 
-describe("declaring an agent app with its id (issue 30)", () => {
+describe("declaring an agent app with its id", () => {
   it("in .github/darz.json, the app needs no lookup: no agent_app_unresolved", async () => {
     const a = await run(withConfig({ agentApps: [{ slug: "coder-app", id: 555 }] }));
     expect(a.identities).toEqual([{ kind: "app", slug: "coder-app", appId: 555, source: "declared", foundIn: ["config"] }]);

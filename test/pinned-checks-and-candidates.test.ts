@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Barg Labs
 
-// Issue 11: a required check any status poster can satisfy is not a gate.
-// Issue 12: package.json, vite.config.*, pyproject.toml and setup.cfg are gate
+// A required check any status poster can satisfy is not a gate.
+// The files package.json, vite.config.*, pyproject.toml and setup.cfg are gate
 // files when, and only when, they hold test or coverage settings.
 
 import { describe, expect, it } from "vitest";
@@ -18,6 +18,7 @@ import {
   fileBody,
   fixtureFetch,
   goodFixture,
+  mergeSha,
   ok,
   pullRequestRule,
   statusChecksRule,
@@ -47,7 +48,7 @@ function withRules(fx: Fixture, rules: unknown[]): Fixture {
   return fx;
 }
 
-describe("check 5: a required check must be pinned to the app that reports it (issue 11)", () => {
+describe("check 5: a required check must be pinned to the app that reports it", () => {
   it("an unpinned required check in the rules fails with required_check_unpinned", async () => {
     const fx = withRules(goodFixture(), [pullRequestRule(GOOD_PR_PARAMS), statusChecksRule(["test", "lint"], true, 42, null)]);
     const r = row(await run(fx), "required_checks_fail_closed");
@@ -130,7 +131,7 @@ function candidateFixture(files: Record<string, string>, codeowners = OWN_GITHUB
   return fx;
 }
 
-describe("check 1: files that hold test or coverage settings are gate files (issue 12)", () => {
+describe("check 1: files that hold test or coverage settings are gate files", () => {
   const gates: Array<[string, string, string]> = [
     ["package.json with a test script", "package.json", JSON.stringify({ scripts: { build: "tsc", test: "vitest run" } })],
     ["package.json with a test:unit script", "packages/a/package.json", JSON.stringify({ scripts: { "test:unit": "jest" } })],
@@ -188,11 +189,11 @@ describe("check 1: files that hold test or coverage settings are gate files (iss
 
   it("more candidates than Darz reads is unverifiable, naming the count", async () => {
     const files: Record<string, string> = {};
-    for (let i = 0; i < 201; i++) files[`packages/p${i}/package.json`] = JSON.stringify({ name: `p${i}` });
+    for (let i = 0; i < 501; i++) files[`packages/p${i}/package.json`] = JSON.stringify({ name: `p${i}` });
     const r = row(await run(candidateFixture(files)), "gate_files_owned");
     expect(r.status).toBe("unverifiable");
     expect(codes(r)).toEqual(["gate_candidates_over_cap"]);
-    expect(r.reasons[0]?.subjects).toEqual(["201 candidates; at most 200 are read"]);
+    expect(r.reasons[0]?.subjects).toEqual(["501 candidate files, 501 distinct; at most 500 distinct files are read"]);
   });
 
   it("check 3 sees an agent that owns a candidate gate file", async () => {
@@ -206,8 +207,11 @@ describe("check 1: files that hold test or coverage settings are gate files (iss
   });
 
   it("check 6 counts a change to a candidate gate file", async () => {
-    const fx = candidateFixture({ "package.json": JSON.stringify({ scripts: { test: "vitest run" } }) }, OWN_ALL);
+    const text = JSON.stringify({ scripts: { test: "vitest run" } });
+    const fx = candidateFixture({ "package.json": text }, OWN_ALL);
     fx.pulls = [{ number: 7, author: "coder-agent", files: [["package.json", "src/index.ts"]] }];
+    // Check 6 judges the file as it was at the merge.
+    fx.extra[`/repos/${REPO}/contents/package.json?ref=${mergeSha(7)}`] = ok(fileBody("package.json", text));
     const r = row(await run(fx), "agent_merges_touching_gates");
     expect((r.details?.pullRequests as Array<{ gateFilesChanged: string[] }>)[0]?.gateFilesChanged).toEqual(["package.json"]);
   });

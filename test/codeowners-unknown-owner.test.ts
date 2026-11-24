@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Barg Labs
 
-// Issue 5, verified 23 Nov in a scratch repository:
-//   line 2: * @houman44
+// Verified on 23 Nov 2026 in a scratch repository:
+//   line 2: * @alice   (in the probe, a real user with write access)
 //   line 3: /probe/ @darz-probe-no-such-user-zz9q   (codeowners/errors: Unknown owner, column 9)
-// GitHub showed a code-owner shield for houman44 on README.md and none on
+// GitHub showed a code-owner shield for that user on README.md and none on
 // probe/a.txt. So a line whose every owner is reported unknown still matches,
 // as the last match, and leaves the path with no code owner: GitHub does not
 // fall back to the earlier line. Other error kinds, and lines where only some
@@ -15,13 +15,13 @@ import { ownersOf, parseCodeowners } from "../src/codeowners.js";
 import { assess } from "../src/assess.js";
 import { REPO, fileBody, fixtureFetch, goodFixture, ok } from "./fixtures/github.js";
 
-const PROBE = "# probe\n* @houman44\n/probe/ @darz-probe-no-such-user-zz9q\n";
+const PROBE = "# probe\n* @alice\n/probe/ @darz-probe-no-such-user-zz9q\n";
 
-describe("an Unknown owner line whose every owner is flagged (issue 5)", () => {
+describe("an Unknown owner line whose every owner is flagged", () => {
   it("matches and leaves the path with no owner, not falling back to the earlier line", () => {
     const f = parseCodeowners(PROBE, [{ line: 3, column: 9, kind: "Unknown owner" }]);
     expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: [], line: 3, ambiguous: false });
-    expect(ownersOf(f, "README.md")).toEqual({ owners: ["@houman44"], line: 2, ambiguous: false });
+    expect(ownersOf(f, "README.md")).toEqual({ owners: ["@alice"], line: 2, ambiguous: false });
   });
 
   it("is still reported as a line GitHub flags", () => {
@@ -30,17 +30,17 @@ describe("an Unknown owner line whose every owner is flagged (issue 5)", () => {
   });
 
   it("columns count from the start of the line as written, leading spaces included", () => {
-    const f = parseCodeowners("* @houman44\n  /probe/ @ghost\n", [{ line: 2, column: 11, kind: "Unknown owner" }]);
+    const f = parseCodeowners("* @alice\n  /probe/ @ghost\n", [{ line: 2, column: 11, kind: "Unknown owner" }]);
     expect(ownersOf(f, "probe/a.txt").ambiguous).toBe(false);
   });
 
   it("stays ambiguous when only some owners on the line are flagged (not verified)", () => {
-    const f = parseCodeowners("* @houman44\n/probe/ @houman44 @ghost\n", [{ line: 2, column: 19, kind: "Unknown owner" }]);
+    const f = parseCodeowners("* @alice\n/probe/ @alice @ghost\n", [{ line: 2, column: 16, kind: "Unknown owner" }]);
     expect(ownersOf(f, "probe/a.txt")).toEqual({ owners: [], line: 2, ambiguous: true });
   });
 
   it("stays ambiguous for another error kind (not verified)", () => {
-    const f = parseCodeowners("* @houman44\n/probe/ @ghost\n", [{ line: 2, column: 9, kind: "Invalid owner" }]);
+    const f = parseCodeowners("* @alice\n/probe/ @ghost\n", [{ line: 2, column: 9, kind: "Invalid owner" }]);
     expect(ownersOf(f, "probe/a.txt").ambiguous).toBe(true);
   });
 

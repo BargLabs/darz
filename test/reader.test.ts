@@ -160,3 +160,26 @@ describe("GitHubClient: concurrency", () => {
     expect(client.log()).toHaveLength(20);
   });
 });
+
+describe("GitHubClient: a list wrapped in an object", () => {
+  it("reads the named array from every page", async () => {
+    const path = "/orgs/o/installations?per_page=100";
+    const f = fakeFetch({
+      [path]: ok({ total_count: 2, installations: [{ id: 1 }] }, { link: `<${API}${path}&page=2>; rel="next"` }),
+      [`${path}&page=2`]: ok({ total_count: 2, installations: [{ id: 2 }] }),
+    });
+    const client = new GitHubClient({ fetch: f.fetch });
+    const r = await client.getAll<{ id: number }>(path, "settings", undefined, undefined, "installations");
+    expect(r.state).toBe("read");
+    expect(r.data?.map((x) => x.id)).toEqual([1, 2]);
+    expect(r.pages).toBe(2);
+  });
+
+  it("a page without the named array is an error, not an empty list", async () => {
+    const path = "/orgs/o/installations?per_page=100";
+    const client = new GitHubClient({ fetch: fakeFetch({ [path]: ok({ total_count: 0 }) }).fetch });
+    const r = await client.getAll(path, "settings", undefined, undefined, "installations");
+    expect(r.state).toBe("error");
+    expect(r.errorKind).toBe("not_a_list");
+  });
+});

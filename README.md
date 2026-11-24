@@ -11,11 +11,11 @@ An agent has no gate if it can do any of these:
 
 Darz reads a repository's settings and files and reports `pass`, `fail` or `unverifiable` for each check, with the setting or file it read. It fails closed when it cannot decide, uses no AI model, and writes a record anyone can re-run.
 
-**Status: v0.1.0, early. GitHub only. Use the GitHub Action pinned to a release's full commit SHA, or install from source.**
+**Status: v0.2.0, early. GitHub only. Use the GitHub Action pinned to a release's full commit SHA, or install from source.**
 
 ## Install from source
 
-You need Node 20 or later and pnpm.
+You need Node 22 or later and pnpm.
 
 ```sh
 git clone https://github.com/BargLabs/darz
@@ -42,6 +42,7 @@ GITHUB_TOKEN=... node dist/bin.js <owner>/<repo> --agent <login> --agent-app <sl
 | `--out <dir>` | Where the outputs go. Default `./darz-out`. |
 | `--api-url <url>` | The API base URL. Default `https://api.github.com`. No other host is called. |
 | `--token-env <name>` | The environment variable that holds the token. Default `GITHUB_TOKEN`. |
+| `--graphql-ruleset-roles` | Also read ruleset bypass role names with GitHub's GraphQL API (read-only queries sent as POST), so check 4 can decide role-based bypasses. Off by default. `=true` and `=false` are also accepted. |
 
 Agents can also be declared in the repository, at `.github/darz.json` on the default branch:
 
@@ -53,13 +54,13 @@ Darz also detects agent identities itself: any account whose type is `Bot`, or w
 
 Darz is read-only:
 
-- It sends GET requests only. Its client refuses any other method before anything is sent.
-- It does not follow redirects.
+- It sends GET requests only. Its client refuses any other method before anything is sent. The one exception is opt-in: `--graphql-ruleset-roles` sends compiled, read-only GraphQL queries, which travel as POST requests, to read ruleset bypass role names. It is off by default, runs only when a ruleset has a repository-role bypass and an agent holds a repository permission, and the record lists it when it runs.
+- It follows a redirect only to the API URL itself, as GitHub sends for a renamed or transferred repository, and lists the redirect in the record. A redirect to any other host or path is not followed. See [`docs/checks.md`](docs/checks.md#redirects).
 - It never prints, logs or writes the token.
 
 ## GitHub Action
 
-Darz also runs as a GitHub Action. It reads the repository over the API and never checks out or runs its code. It makes no write call to any API: it writes the record and the SARIF file to `out-dir`, sets step outputs, and adds a job summary. To show results in code scanning, upload `darz.sarif` in a separate step, as below. That step is the only one that writes, and it needs `security-events: write`.
+Darz also runs as a GitHub Action, listed on the Marketplace as **DARZ Agent Gate Check**: a Marketplace name cannot match a GitHub user or organization, and a user named darz exists. It reads the repository over the API and never checks out or runs its code. It makes no write call to any API: it writes the record and the SARIF file to `out-dir`, sets step outputs, and adds a job summary. To show results in code scanning, upload `darz.sarif` in a separate step, as below. That step is the only one that writes, and it needs `security-events: write`.
 
 Pin the Action to the full commit SHA of a release, not to a tag: a tag can move, a commit cannot.
 
@@ -101,8 +102,9 @@ jobs:
 | `token` | the workflow token | The token Darz reads with. See below. |
 | `agents`, `agent-apps`, `gates` | none | As `--agent`, `--agent-app` and `--gate`. Separate entries with commas or new lines. |
 | `merges` | `50` | Merged pull requests check 6 reads. |
-| `out-dir` | `darz-out` | Where the record and SARIF are written. |
+| `out-dir` | `darz-out` | Where the record and SARIF are written. Darz's own files there from an earlier run are removed first, so a run that stops early never reports them. |
 | `api-url` | the workflow's API URL | No other host is called. |
+| `graphql-ruleset-roles` | `false` | `true` turns on the opt-in GraphQL reader described above. Read in any case, so `True` works too. |
 | `fail-on` | `fail` | `fail` fails the step when a check fails. `unverifiable` also fails it when a row is unverifiable. `never` only reports. An unreadable repository always fails the step. |
 
 **Outputs:**
@@ -110,7 +112,7 @@ jobs:
 - `record`, `record-sha256` and `sarif`, the file paths and the record's SHA-256;
 - `pass`, `fail` and `unverifiable`, the counts.
 
-**The default workflow token reads less than a full check needs.** Give the job `pull-requests: read`, or check 6 cannot read merged pull requests. Even then, the workflow token cannot read classic branch protection, ruleset bypass lists or the collaborators list. The rows that depend on them come out `unverifiable`, the step does not fail, and the job summary says what to add: a token with Administration: read, such as a fine-grained token or a GitHub App installation token, passed as `token` from a secret.
+**The default workflow token reads less than a full check needs.** Give the job `pull-requests: read`, or check 6 cannot read merged pull requests. Even then, the workflow token cannot read classic branch protection, ruleset bypass lists or the collaborators list. The rows that depend on them come out `unverifiable`, the step does not fail, and the job summary says what to add: a token with Administration: read, such as a fine-grained token or a GitHub App installation token, passed as `token` from a secret. Check 4 also reads the installation permissions of agent apps, which needs an organisation owner's token or organisation Administration: read. Without it, check 4 says in its context that they were not checked, and decides the row as before.
 
 On a branch protected only by rulesets, one more thing applies. GitHub answers 404 for classic protection both when there is none and when the token may not read it. Darz takes that 404 as proof of absence only from a classic token with the `repo` scope belonging to an admin, because only such a token says what it may read, in its `x-oauth-scopes` header. A fine-grained or app token leaves classic protection unverifiable on such a branch. A classic `repo` token can also write, so weigh that before storing one as a secret. Darz itself only reads.
 
@@ -118,7 +120,7 @@ On a branch protected only by rulesets, one more thing applies. GitHub answers 4
 
 | # | Check | Passes when |
 |---|---|---|
-| 1 | `gate_files_owned` | Every gate file has a code owner, and code-owner review is required. Gate files are CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, and `.github/darz.json`. `package.json`, `vite.config.*`, `pyproject.toml` and `setup.cfg` count only when they hold test or coverage settings. |
+| 1 | `gate_files_owned` | Every gate file has a code owner, and code-owner review is required. Gate files are CI workflows and actions, the CODEOWNERS file in use, test and coverage configuration, and `.github/darz.json`. `package.json`, `vite.config.*`, `pyproject.toml` and `setup.cfg` count only when they hold test or coverage settings. A new workflow, a new action, and a CODEOWNERS file in a location GitHub reads first must have an owner too. |
 | 2 | `human_review_required` | At least one approving review is required, stale approvals are dismissed on push, and the most recent push must be approved by someone other than its pusher. |
 | 3 | `writer_not_approver` | The last-push rule holds, and no agent identity is a code owner of a gate file. |
 | 4 | `agents_cannot_bypass` | No agent identity can bypass a ruleset, holds admin permission, or is allowed to bypass classic pull request requirements. |
@@ -139,13 +141,13 @@ Each check reads both the branch's effective rules (rulesets, the organisation's
 
 On a public repository you do not administer, expect checks 1 to 4 to be `unverifiable` whenever they depend on those settings.
 
-If no agent identity is declared or detected, checks 3, 4 and 6 are `unverifiable` with reason `no_agent_identities`. They never pass on an empty set.
+If no agent identity is declared or detected, checks 3, 4 and 6 are `unverifiable` with reason `no_agent_identities`, and so is check 5 when a required check is pinned to an app. They never pass on an empty set.
 
 ## Outputs
 
 Darz writes three files to `--out`:
 
-- **`darz-record.json`:** everything read and found, as [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON. That includes the format (`darz-record-0.1`), the tool version, the repository, the default branch, the commit SHA read, `readAt` in UTC, the options used, which endpoints returned `read`, `not_permitted` or `error`, the agent identities, and every check row. It validates against [`schema/record-0.1.schema.json`](schema/record-0.1.schema.json).
+- **`darz-record.json`:** everything read and found, as [RFC 8785](https://www.rfc-editor.org/rfc/rfc8785) canonical JSON. That includes the format (`darz-record-0.2`), the tool version, the repository, the default branch, the commit SHA read, `readAt` in UTC, the options used, which endpoints returned `read`, `not_permitted` or `error`, the agent identities, and every check row. It validates against [`schema/record-0.2.schema.json`](schema/record-0.2.schema.json). Format 0.2 adds the GraphQL reader's option and reads; records from v0.1.0 are format 0.1 and validate against [`schema/record-0.1.schema.json`](schema/record-0.1.schema.json), which is kept as released.
 - **`darz-record.json.sha256`:** the SHA-256 of those exact bytes, in `sha256sum` format.
 - **`darz.sarif`:** SARIF 2.1.0, with one result per `fail` (level `error`) or `unverifiable` (level `warning`) row and rule IDs `darz/<check id>`. For github.com, GitHub Enterprise Server (`--api-url https://<host>/api/v3`) and GHE.com it names the repository and commit it read; for any other API URL it leaves that out rather than guess. You can upload it to code scanning.
 

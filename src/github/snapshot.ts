@@ -3,7 +3,15 @@
 
 import { Buffer } from "node:buffer";
 import { CODEOWNERS_LOCATIONS } from "../codeowners.js";
-import { DARZ_CONFIG_PATH, MAX_CANDIDATE_READS, holdsTestSettings, isCandidatePath } from "../gates.js";
+import {
+  DARZ_CONFIG_PATH,
+  type GateSet,
+  MAX_CANDIDATE_READS,
+  MAX_MERGE_CANDIDATE_READS,
+  holdsTestSettings,
+  isCandidatePath,
+  isGatePathForChange,
+} from "../gates.js";
 import type { GitHubClient, ReadResult } from "./client.js";
 import type {
   AppData,
@@ -12,6 +20,9 @@ import type {
   CodeownersErrorData,
   CollaboratorData,
   ContentData,
+  GitCommitData,
+  InstallationData,
+  OrgMembershipData,
   PullData,
   PullFileData,
   RepoData,
@@ -66,7 +77,8 @@ export interface CandidateResult {
 /** Files that are gate files only if they hold test or coverage settings (gates.ts). */
 export type CandidateState =
   | { state: "not_read" }
-  | { state: "over_cap"; count: number }
+  /** `count` candidate files, `distinct` of them with different blobs. */
+  | { state: "over_cap"; count: number; distinct: number }
   | { state: "read"; results: CandidateResult[] };
 
 export type ClassicState =
@@ -93,7 +105,13 @@ export interface Snapshot {
   classic: ClassicState | null;
   rulesets: Map<number, ReadResult<RulesetData>>;
   collaborators: ReadResult<CollaboratorData[]> | null;
-  merges: { requested: number; pulls: ReadResult<PullData[]> | null; merged: PullData[] };
+  merges: {
+    requested: number;
+    pulls: ReadResult<PullData[]> | null;
+    merged: PullData[];
+    /** The page cap for the pull request list; reaching it with pages left means the set may be incomplete. */
+    pageCap: number;
+  };
   candidates: CandidateState;
 }
 
@@ -127,7 +145,7 @@ export function parseConfig(text: string): DarzConfig | string {
     if (!Array.isArray(v)) return `"${k}" must be an array`;
     if (k === "agentApps") {
       // Each entry is a slug, or { "slug": "...", "id": 123 } to name the app id
-      // too, so no GET /apps/{slug} lookup is needed (issue 30).
+      // too, so no GET /apps/{slug} lookup is needed.
       for (const x of v) {
         if (typeof x === "string" && x.length > 0) {
           out.agentApps.push({ slug: x });
@@ -179,7 +197,7 @@ export async function readSnapshot(client: GitHubClient, o: ReadOptions): Promis
     classic: null,
     rulesets: new Map(),
     collaborators: null,
-    merges: { requested: o.merges, pulls: null, merged: [] },
+    merges: { requested: o.merges, pulls: null, merged: [], pageCap: mergePageCap(o.merges) },
     candidates: { state: "not_read" },
   };
   const defaultBranch = repo.state === "read" ? repo.data?.default_branch : undefined;
@@ -212,6 +230,18 @@ export async function readSnapshot(client: GitHubClient, o: ReadOptions): Promis
       }),
     readMerges(client, R, defaultBranch, o.merges, snap),
   ]);
+  // A protected branch is protected by rules or by classic protection. If the
+  // effective rules were read and there are none, classic protection must
+  // exist, so a 404 on it is not proof of absence: the answers contradict
+  // each other, and the classic state is unknown.
+  if (
+    snap.classic?.state === "absent" &&
+    snap.classic.why === "admin_token_with_repo_scope" &&
+    snap.rules?.state === "read" &&
+    (snap.rules.data ?? []).length === 0
+  ) {
+    snap.classic = { state: "unreadable", endpoint: snap.classic.endpoint };
+  }
   return snap;
 }
 
@@ -222,18 +252,32 @@ async function readTree(client: GitHubClient, R: string, sha: string, snap: Snap
   const found = t.tree.filter(
     (e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isCandidatePath(e.path),
   ) as Array<{ path: string; sha: string }>;
-  if (found.length > MAX_CANDIDATE_READS) {
-    snap.candidates = { state: "over_cap", count: found.length };
+  // Files with the same blob have the same content, so each blob is read
+  // once; each path is still judged by its own name.
+  const blobs = new Set(found.map((f) => f.sha));
+  if (blobs.size > MAX_CANDIDATE_READS) {
+    snap.candidates = { state: "over_cap", count: found.length, distinct: blobs.size };
     return;
   }
+  const texts = new Map<string, Promise<{ endpoint: string; text: string | null }>>();
+  const readBlob = (blob: string) => {
+    let p = texts.get(blob);
+    if (!p) {
+      const endpoint = `${R}/git/blobs/${blob}`;
+      p = client.get<{ encoding?: string; content?: string }>(endpoint, "content").then((r) => ({
+        endpoint,
+        text:
+          r.state === "read" && r.data?.encoding === "base64" && typeof r.data.content === "string"
+            ? Buffer.from(r.data.content, "base64").toString("utf8")
+            : null,
+      }));
+      texts.set(blob, p);
+    }
+    return p;
+  };
   const results = await Promise.all(
     found.map(async ({ path, sha: blob }): Promise<CandidateResult> => {
-      const endpoint = `${R}/git/blobs/${blob}`;
-      const r = await client.get<{ encoding?: string; content?: string }>(endpoint, "content");
-      const text =
-        r.state === "read" && r.data?.encoding === "base64" && typeof r.data.content === "string"
-          ? Buffer.from(r.data.content, "base64").toString("utf8")
-          : null;
+      const { endpoint, text } = await readBlob(blob);
       if (text === null) return { path, state: "unreadable", endpoint: ep(endpoint), why: "not read" };
       const holds = holdsTestSettings(path, text);
       if (holds === null) return { path, state: "unreadable", endpoint: ep(endpoint), why: "not parseable" };
@@ -306,11 +350,17 @@ async function readClassic(client: GitHubClient, R: string, B: string, snap: Sna
   // for a token that may not read it. The user's role (permissions.admin) does
   // not say what the token may read. A classic token says what it may do in
   // x-oauth-scopes: with the repo scope and an admin user it can read classic
-  // protection, so only then is a 404 proof that there is none (issue 18).
+  // protection, so only then is a 404 proof that there is none.
   // Fine-grained and app tokens send no scopes header, so a 404 stays unreadable.
+  // The branch must also have been read as protected: GitHub answers 404 here
+  // for a branch it cannot find too, so without the branch read a 404 proves
+  // nothing.
   const protPath = `${R}/branches/${B}/protection`;
   const r = await client.get<ClassicProtectionData>(protPath, "settings");
-  const canRead = snap.repo.data?.permissions?.admin === true && (snap.repo.oauthScopes ?? []).includes("repo");
+  const canRead =
+    snap.branchProtected === true &&
+    snap.repo.data?.permissions?.admin === true &&
+    (snap.repo.oauthScopes ?? []).includes("repo");
   if (r.state === "read" && r.data && typeof r.data === "object") {
     snap.classic = { state: "present", data: r.data, endpoint: ep(protPath) };
   } else if (r.status === 404 && canRead) {
@@ -320,12 +370,49 @@ async function readClassic(client: GitHubClient, R: string, B: string, snap: Sna
   }
 }
 
+/**
+ * Pages of closed pull requests Darz reads past the fewest that could hold N
+ * merges (N / 100, rounded up). Each page is one request of 100 closed pull
+ * requests; ten more allow for 1,000 closed pull requests that were not merged
+ * or were merged earlier and updated since.
+ */
+export const MERGE_EXTRA_PAGES = 10;
+
+export function mergePageCap(merges: number): number {
+  return Math.ceil(merges / 100) + MERGE_EXTRA_PAGES;
+}
+
+const time = (s: unknown): number | null => {
+  if (typeof s !== "string") return null;
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : t;
+};
+
+/**
+ * Whether the pull requests read so far, newest update first, settle the N most
+ * recently merged. Merging sets `updated_at`, so a pull request not yet read was
+ * updated, and so merged, no later than the oldest update read. Once that is
+ * older than the Nth merge read, no unread pull request can be among the last N.
+ */
+export function mergesSettled(items: readonly PullData[], merges: number): boolean {
+  const merged = items
+    .map((p) => time(p.merged_at))
+    .filter((t): t is number => t !== null)
+    .sort((a, b) => b - a);
+  const nth = merged[merges - 1];
+  if (nth === undefined) return false;
+  const updated = items.map((p) => time(p.updated_at)).filter((t): t is number => t !== null);
+  if (updated.length === 0) return false;
+  return Math.min(...updated) < nth;
+}
+
 async function readMerges(client: GitHubClient, R: string, branch: string, merges: number, snap: Snapshot) {
   const pullsPath = `${R}/pulls?state=closed&base=${encodeURIComponent(branch)}&sort=updated&direction=desc&per_page=100`;
   const pulls = await client.getAll<PullData>(
     pullsPath,
     "content",
-    (items) => items.filter((p) => typeof p.merged_at === "string").length >= merges,
+    (items) => mergesSettled(items, merges),
+    snap.merges.pageCap,
   );
   snap.merges.pulls = pulls;
   if (pulls.state === "read") {
@@ -379,4 +466,176 @@ export async function readPullDetail(client: GitHubClient, snap: Snapshot, numbe
 
 export async function readApp(client: GitHubClient, slug: string): Promise<ReadResult<AppData>> {
   return client.get<AppData>(`/apps/${encodeURIComponent(slug)}`, "content");
+}
+
+const HEX_SHA = /^[0-9a-f]{40,64}$/;
+
+/**
+ * A candidate file (package.json and the like) an agent pull request changed,
+ * and where Darz reads it as it was at the merge:
+ * - `merge`: at the merge commit;
+ * - `blob`: a removed file, from the blob the pull request removed (the file
+ *   list's `sha`);
+ * - `parent`: a rename's old name, or a removed file with no blob SHA, at the
+ *   merge commit's first parent, the default branch just before the merge.
+ */
+export interface CandidateChange {
+  path: string;
+  at: "merge" | "blob" | "parent";
+  blob?: string;
+}
+
+/**
+ * The changed paths check 6 can judge only by reading them: candidate paths
+ * that no gate pattern or exact gate path already covers. `gates` must not
+ * hold candidates judged at the head.
+ */
+export function candidateChanges(files: readonly PullFileData[], gates: GateSet): CandidateChange[] {
+  const out = new Map<string, CandidateChange>();
+  const needsRead = (p: unknown): p is string =>
+    typeof p === "string" && !out.has(p) && isCandidatePath(p) && !isGatePathForChange(gates, p);
+  for (const f of files) {
+    const path = f.filename;
+    if (needsRead(path)) {
+      if (f.status !== "removed") out.set(path, { path, at: "merge" });
+      else if (typeof f.sha === "string" && HEX_SHA.test(f.sha)) out.set(path, { path, at: "blob", blob: f.sha });
+      else out.set(path, { path, at: "parent" });
+    }
+    if (needsRead(f.previous_filename)) out.set(f.previous_filename, { path: f.previous_filename, at: "parent" });
+  }
+  return [...out.values()].sort((a, b) => (a.path < b.path ? -1 : 1));
+}
+
+export interface CandidateAtMerge {
+  path: string;
+  state: "gate" | "not_gate" | "unreadable";
+  why?: string;
+}
+
+/** One agent pull request's candidate files as they were at its merge. */
+export type MergeCandidates =
+  | { state: "over_cap" }
+  | { state: "read"; results: CandidateAtMerge[]; endpoints: string[] };
+
+export interface MergeCandidatePlan {
+  number: number;
+  mergeSha: unknown;
+  changes: CandidateChange[];
+}
+
+/**
+ * Read each agent pull request's changed candidate files as they were at its
+ * merge, within {@link MAX_MERGE_CANDIDATE_READS}. `plans` come newest merge
+ * first; once a pull request's reads would pass the cap, it and every later
+ * one is `over_cap` and nothing is read for them.
+ */
+export async function readCandidatesAtMerges(
+  client: GitHubClient,
+  snap: Snapshot,
+  plans: readonly MergeCandidatePlan[],
+): Promise<Map<number, MergeCandidates>> {
+  const R = `/repos/${encodeURIComponent(snap.owner)}/${encodeURIComponent(snap.name)}`;
+  const out = new Map<number, MergeCandidates>();
+  let budget = MAX_MERGE_CANDIDATE_READS;
+  let exhausted = false;
+  const reads: Array<Promise<void>> = [];
+  for (const plan of plans) {
+    if (plan.changes.length === 0) continue;
+    const sha = typeof plan.mergeSha === "string" && HEX_SHA.test(plan.mergeSha) ? plan.mergeSha : null;
+    const readable = plan.changes.filter((c) => c.at === "blob" || sha !== null);
+    const cost = readable.length + (sha !== null && readable.some((c) => c.at === "parent") ? 1 : 0);
+    if (exhausted || cost > budget) {
+      exhausted = true;
+      out.set(plan.number, { state: "over_cap" });
+      continue;
+    }
+    budget -= cost;
+    reads.push(
+      readOnePlan(client, R, plan.changes, sha).then((r) => {
+        out.set(plan.number, r);
+      }),
+    );
+  }
+  await Promise.all(reads);
+  return out;
+}
+
+async function readOnePlan(
+  client: GitHubClient,
+  R: string,
+  changes: readonly CandidateChange[],
+  sha: string | null,
+): Promise<MergeCandidates> {
+  const endpoints: string[] = [];
+  let parent: Promise<string | null> | null = null;
+  const parentSha = (mergeSha: string) => {
+    if (!parent) {
+      const path = `${R}/git/commits/${mergeSha}`;
+      endpoints.push(ep(path));
+      parent = client.get<GitCommitData>(path, "content").then((r) => {
+        const p = r.state === "read" ? r.data?.parents?.[0]?.sha : undefined;
+        return typeof p === "string" && HEX_SHA.test(p) ? p : null;
+      });
+    }
+    return parent;
+  };
+  const judge = (path: string, text: string | null, why: string): CandidateAtMerge => {
+    if (text === null) return { path, state: "unreadable", why };
+    const holds = holdsTestSettings(path, text);
+    if (holds === null) return { path, state: "unreadable", why: "not parseable" };
+    return { path, state: holds ? "gate" : "not_gate" };
+  };
+  const atRef = async (path: string, ref: string, missing: string): Promise<CandidateAtMerge> => {
+    const endpoint = `${R}/contents/${encodePath(path)}?ref=${ref}`;
+    endpoints.push(ep(endpoint));
+    const r = await client.get<ContentData>(endpoint, "file");
+    if (r.state === "read" && r.absent) return { path, state: "unreadable", why: missing };
+    return judge(path, r.state === "read" ? decodeContent(r.data) : null, "not read");
+  };
+  const results = await Promise.all(
+    changes.map(async (c): Promise<CandidateAtMerge> => {
+      if (c.at === "blob" && c.blob) {
+        const endpoint = `${R}/git/blobs/${c.blob}`;
+        endpoints.push(ep(endpoint));
+        const r = await client.get<{ encoding?: string; content?: string }>(endpoint, "content");
+        const text =
+          r.state === "read" && r.data?.encoding === "base64" && typeof r.data.content === "string"
+            ? Buffer.from(r.data.content, "base64").toString("utf8")
+            : null;
+        return judge(c.path, text, "not read");
+      }
+      if (sha === null) return { path: c.path, state: "unreadable", why: "no merge commit SHA" };
+      if (c.at === "merge") return atRef(c.path, sha, "not found at the merge commit");
+      const p = await parentSha(sha);
+      if (p === null) return { path: c.path, state: "unreadable", why: "merge commit's parent not read" };
+      return atRef(c.path, p, "not found before the merge");
+    }),
+  );
+  return { state: "read", results, endpoints: endpoints.sort() };
+}
+
+/**
+ * A user's membership of the organisation that owns the repository, for an
+ * OrganizationAdmin bypass. GitHub answers 404 both for a user who
+ * is not a member and for a membership the token cannot see, so a 404 is
+ * `not_permitted`, never proof that the user is not an owner.
+ */
+export async function readOrgMembership(client: GitHubClient, org: string, login: string): Promise<ReadResult<OrgMembershipData>> {
+  return client.get<OrgMembershipData>(`/orgs/${encodeURIComponent(org)}/memberships/${encodeURIComponent(login)}`, "settings");
+}
+
+/** The repository owner's account type, or null when the response does not say. */
+export function ownerType(snap: Snapshot): "Organization" | "User" | null {
+  const t = snap.repo.state === "read" ? snap.repo.data?.owner?.type : undefined;
+  return t === "Organization" || t === "User" ? t : null;
+}
+
+/**
+ * Every GitHub App installation on the organisation, with each one's app id,
+ * slug and permissions. GitHub serves it to an organisation owner,
+ * or a token with organisation Administration: read; the GitHub Actions
+ * workflow token cannot read it. A 404 is `not_permitted`.
+ */
+export async function readOrgInstallations(client: GitHubClient, org: string): Promise<ReadResult<InstallationData[]>> {
+  return client.getAll<InstallationData>(`/orgs/${encodeURIComponent(org)}/installations?per_page=100`, "settings", undefined, undefined, "installations");
 }

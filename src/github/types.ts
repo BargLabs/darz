@@ -101,12 +101,21 @@ export interface PullData {
   html_url?: string;
   user?: { login?: string; type?: string } | null;
   merged_at?: string | null;
+  updated_at?: string | null;
+  merge_commit_sha?: string | null;
+}
+
+export interface GitCommitData {
+  sha?: string;
+  parents?: Array<{ sha?: string }>;
 }
 
 export interface PullFileData {
   filename?: string;
   previous_filename?: string;
   status?: string;
+  /** The file's blob; for a removed file, the blob the pull request removed. */
+  sha?: string;
 }
 
 export interface ReviewData {
@@ -117,4 +126,19 @@ export interface ReviewData {
 export interface AppData {
   id?: number;
   slug?: string;
+}
+
+/** `GET /orgs/{org}/memberships/{username}`. An owner has role `admin`. */
+export interface OrgMembershipData {
+  role?: string;
+  state?: string;
+}
+
+/** One entry of `GET /orgs/{org}/installations`. */
+export interface InstallationData {
+  id?: number;
+  app_id?: number;
+  app_slug?: string;
+  repository_selection?: string;
+  permissions?: Record<string, string>;
 }

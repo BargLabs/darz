@@ -14,6 +14,11 @@ export interface RecordOptions {
   agentApps: string[];
   gates: string[];
   merges: number;
+  /**
+   * Whether the opt-in GraphQL reader was asked for (the one exception to GET
+   * only). Whether it ran is in `reads`: an entry starting `POST `.
+   */
+  graphqlRulesetRoles?: boolean;
 }
 
 export interface DarzRecord {
@@ -49,6 +54,7 @@ export function buildRecord(a: Assessment, options: RecordOptions): DarzRecord {
       agentApps: [...options.agentApps],
       gates: [...options.gates],
       merges: options.merges,
+      graphqlRulesetRoles: options.graphqlRulesetRoles === true,
     },
     classicProtection: a.classicProtection,
     reads,
