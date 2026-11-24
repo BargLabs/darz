@@ -6,6 +6,7 @@ import type { CheckRow } from "./checks/types.js";
 import { type FetchLike, GitHubClient, type ReadLogEntry, type ReadResult } from "./github/client.js";
 import type { AppData, InstallationData, OrgMembershipData } from "./github/types.js";
 import { GraphQLReader, type RulesetRolesRead, readRulesetRoles } from "./github/graphql.js";
+import { type LessonsRead, readLessons } from "./github/lessons.js";
 import {
   type MergeCandidates,
   type PullDetail,
@@ -41,6 +42,12 @@ export interface AssessOptions {
    * identity holds a repository permission.
    */
   graphqlRulesetRoles?: boolean;
+  /**
+   * The commit whose files check 7 runs lessons over: a full commit SHA. The
+   * lessons themselves always come from the default branch's head, and every
+   * other check reads the head. Default: the head.
+   */
+  ref?: string;
 }
 
 /** A read as the record lists it: the client's log entry, with the endpoint prefixed by `GET `. */
@@ -52,6 +59,8 @@ export interface Assessment {
   repositoryReadable: boolean;
   defaultBranch: string | null;
   commitSha: string | null;
+  /** The commit check 7 ran lessons over: `ref` if given, else the default branch's head. */
+  ref: string | null;
   codeownersPath: string | null;
   /** Where a SARIF result about a setting is located: .github/CODEOWNERS if it exists, else README.md. */
   settingsLocation: string;
@@ -162,6 +171,9 @@ export async function assess(o: AssessOptions): Promise<Assessment> {
     rulesetRoles = await readRulesetRoles(reader, parsed.owner, parsed.name);
     graphqlLog = reader.log();
   }
+  // Check 7 reads lesson files at the default branch's head, always, so a pull
+  // request checked with --ref cannot remove the lesson that judges it.
+  const lessons: LessonsRead = await readLessons(client, snap, o.ref ?? null);
   const checks = evaluate({
     snap,
     identities,
@@ -175,6 +187,7 @@ export async function assess(o: AssessOptions): Promise<Assessment> {
     orgMemberships,
     ...(orgInstallations !== undefined ? { orgInstallations } : {}),
     ...(rulesetRoles !== undefined ? { rulesetRoles } : {}),
+    lessons,
   });
 
   const c = snap.classic;
@@ -193,6 +206,7 @@ export async function assess(o: AssessOptions): Promise<Assessment> {
     repositoryReadable: snap.repositoryReadable,
     defaultBranch: snap.defaultBranch,
     commitSha: snap.commitSha,
+    ref: lessons.state === "read" ? lessons.ref : (o.ref ?? snap.commitSha),
     codeownersPath,
     settingsLocation: codeownersPath === ".github/CODEOWNERS" ? ".github/CODEOWNERS" : "README.md",
     classicProtection,

@@ -19,6 +19,20 @@ export interface AgentIdentity {
   foundIn: FoundIn[];
 }
 
+/**
+ * GitHub Actions' own app. Every workflow's token acts as it, and most
+ * repositories pin their required checks to it, so it is a platform identity,
+ * not an agent: it is not detected from merge authors, collaborators or
+ * CODEOWNERS. A ruleset bypass for it is still detected, since then any
+ * workflow can go around the rules, and it can still be declared.
+ */
+export const GITHUB_ACTIONS_SLUG = "github-actions";
+export const GITHUB_ACTIONS_APP_ID = 15368;
+
+export function isGitHubActionsLogin(login: string): boolean {
+  return login.replace(/\[bot\]$/i, "").toLowerCase() === GITHUB_ACTIONS_SLUG;
+}
+
 export function isBotLogin(login: string): boolean {
   return /\[bot\]$/i.test(login);
 }
@@ -156,6 +170,8 @@ export interface DeclaredInput {
  * are any account of type `Bot`, or whose login ends in `[bot]`, found in the
  * collaborators list, a ruleset's `Integration` bypass actors, CODEOWNERS
  * entries, or the authors of the merged pull requests read for check 6.
+ * github-actions[bot] is not detected from collaborators, CODEOWNERS or merge
+ * authors: see GITHUB_ACTIONS_APP_ID.
  */
 export function collectIdentities(snap: Snapshot, flags: DeclaredInput): IdentitySet {
   const set = new IdentitySet();
@@ -172,7 +188,7 @@ export function collectIdentities(snap: Snapshot, flags: DeclaredInput): Identit
 
   if (snap.collaborators?.state === "read") {
     for (const c of snap.collaborators.data ?? []) {
-      if (typeof c.login !== "string") continue;
+      if (typeof c.login !== "string" || isGitHubActionsLogin(c.login)) continue;
       if (c.type === "Bot" || isBotLogin(c.login)) set.add("app", botSlug(c.login), null, "detected", "collaborators");
     }
   }
@@ -181,7 +197,10 @@ export function collectIdentities(snap: Snapshot, flags: DeclaredInput): Identit
     if (rs.state !== "read") continue;
     for (const actor of rs.data?.bypass_actors ?? []) {
       if (actor.actor_type === "Integration" && typeof actor.actor_id === "number") {
-        set.add("app", null, actor.actor_id, "detected", "ruleset_bypass");
+        // A bypass actor is known by id only. GitHub Actions' slug is fixed, and
+        // without it github-actions[bot]'s merges would match no identity.
+        const slug = actor.actor_id === GITHUB_ACTIONS_APP_ID ? GITHUB_ACTIONS_SLUG : null;
+        set.add("app", slug, actor.actor_id, "detected", "ruleset_bypass");
       }
     }
   }
@@ -196,14 +215,14 @@ export function collectIdentities(snap: Snapshot, flags: DeclaredInput): Identit
       for (const owner of rule.owners) {
         if (ownerKind(owner) !== "user") continue;
         const login = owner.slice(1);
-        if (isBotLogin(login)) set.add("app", botSlug(login), null, "detected", "codeowners");
+        if (isBotLogin(login) && !isGitHubActionsLogin(login)) set.add("app", botSlug(login), null, "detected", "codeowners");
       }
     }
   }
 
   for (const p of snap.merges.merged) {
     const login = p.user?.login;
-    if (typeof login !== "string") continue;
+    if (typeof login !== "string" || isGitHubActionsLogin(login)) continue;
     if (p.user?.type === "Bot" || isBotLogin(login)) set.add("app", botSlug(login), null, "detected", "merge_authors");
   }
   return set;

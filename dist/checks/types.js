@@ -7,6 +7,7 @@ export const CHECK_IDS = [
     "agents_cannot_bypass",
     "required_checks_fail_closed",
     "agent_merges_touching_gates",
+    "lessons_hold",
 ];
 export const CHECK_TITLES = {
     gate_files_owned: "Gate files are owned and code-owner review is required",
@@ -15,4 +16,5 @@ export const CHECK_TITLES = {
     agents_cannot_bypass: "Agents cannot bypass the rules or administer the repository",
     required_checks_fail_closed: "At least one status check is required",
     agent_merges_touching_gates: "Recent merges by agent identities that changed gate files",
+    lessons_hold: "Approved lessons hold at the commit read",
 };

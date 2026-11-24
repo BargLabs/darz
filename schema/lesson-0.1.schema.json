@@ -1,0 +1,79 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/BargLabs/darz/blob/main/schema/lesson-0.1.schema.json",
+  "title": "Darz lesson, format 0.1",
+  "description": "One lesson a team has learnt, at .github/darz/lessons/<id>.json, with a deterministic check Darz runs over the repository's files. The id must equal the file name without .json, and a regex pattern must compile with the u flag; Darz checks both, as a schema cannot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "statement", "evidence", "check"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]{3,64}$"
+    },
+    "statement": {
+      "description": "The lesson in one sentence.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[^\\r\\n]*$"
+    },
+    "evidence": {
+      "description": "Where the mistake the lesson records happened.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "enum": ["commit", "pull_request", "issue", "url"] },
+          "ref": { "type": "string", "maxLength": 2000 }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "commit" } } },
+            "then": { "properties": { "ref": { "type": "string", "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$" } } }
+          },
+          {
+            "if": { "properties": { "kind": { "enum": ["pull_request", "issue"] } } },
+            "then": { "properties": { "ref": { "type": "string", "pattern": "^[1-9][0-9]{0,9}$" } } }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "url" } } },
+            "then": { "properties": { "ref": { "type": "string", "pattern": "^https://\\S+$" } } }
+          }
+        ]
+      }
+    },
+    "check": {
+      "description": "forbid: no line in any file matching paths may match. require: every file matching paths must have a matching line, and at least one file must match paths. Matching is per line.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "paths", "pattern", "match"],
+      "properties": {
+        "kind": { "enum": ["forbid", "require"] },
+        "paths": {
+          "description": "Path globs, matched against the whole path: ** crosses directories, * and ? stay within one segment.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": { "type": "string", "minLength": 1, "maxLength": 500, "pattern": "^[^\\r\\n]*$" }
+        },
+        "pattern": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "match": { "enum": ["literal", "regex"] }
+      }
+    },
+    "retired": {
+      "description": "A retired lesson is not in force. Retiring it is a change to its file, so it needs the same approval.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["on", "reason"],
+      "properties": {
+        "on": { "type": "string", "format": "date" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    }
+  }
+}

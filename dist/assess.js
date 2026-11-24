@@ -3,6 +3,7 @@
 import { evaluate, orgMembershipLogins, roleNamesCanMatter } from "./checks/evaluate.js";
 import { GitHubClient } from "./github/client.js";
 import { GraphQLReader, readRulesetRoles } from "./github/graphql.js";
+import { readLessons } from "./github/lessons.js";
 import { candidateChanges, ownerType, readApp, readCandidatesAtMerges, readOrgInstallations, readOrgMembership, readPullDetail, readSnapshot, } from "./github/snapshot.js";
 import { gateSet } from "./gates.js";
 import { collectIdentities, finaliseIdentities, matchLogin } from "./identities.js";
@@ -97,6 +98,9 @@ export async function assess(o) {
         rulesetRoles = await readRulesetRoles(reader, parsed.owner, parsed.name);
         graphqlLog = reader.log();
     }
+    // Check 7 reads lesson files at the default branch's head, always, so a pull
+    // request checked with --ref cannot remove the lesson that judges it.
+    const lessons = await readLessons(client, snap, o.ref ?? null);
     const checks = evaluate({
         snap,
         identities,
@@ -110,6 +114,7 @@ export async function assess(o) {
         orgMemberships,
         ...(orgInstallations !== undefined ? { orgInstallations } : {}),
         ...(rulesetRoles !== undefined ? { rulesetRoles } : {}),
+        lessons,
     });
     const c = snap.classic;
     const classicProtection = !c
@@ -126,6 +131,7 @@ export async function assess(o) {
         repositoryReadable: snap.repositoryReadable,
         defaultBranch: snap.defaultBranch,
         commitSha: snap.commitSha,
+        ref: lessons.state === "read" ? lessons.ref : (o.ref ?? snap.commitSha),
         codeownersPath,
         settingsLocation: codeownersPath === ".github/CODEOWNERS" ? ".github/CODEOWNERS" : "README.md",
         classicProtection,

@@ -16,8 +16,9 @@ const WORKFLOW_PROBE = ".github/workflows/darz-probe-new-workflow.yml";
 const WORKFLOW_PROBE_YAML = ".github/workflows/darz-probe-new-workflow.yaml";
 const ACTION_PROBE = ".github/actions/darz-probe-new-action/action.yml";
 const ACTION_PROBE_YAML = ".github/actions/darz-probe-new-action/action.yaml";
+const LESSON_PROBE = ".github/darz/lessons/darz-probe-new-lesson.json";
 /** The default directory probes, sorted as probePaths returns them. */
-const DEFAULT_PROBES = [ACTION_PROBE_YAML, ACTION_PROBE, WORKFLOW_PROBE_YAML, WORKFLOW_PROBE];
+const DEFAULT_PROBES = [ACTION_PROBE_YAML, ACTION_PROBE, LESSON_PROBE, WORKFLOW_PROBE_YAML, WORKFLOW_PROBE];
 
 async function run(fx: Fixture, extra: Partial<AssessOptions> = {}): Promise<Assessment> {
   return assess({
@@ -55,6 +56,10 @@ describe("probe paths", () => {
     expect(directoryProbes(".github/actions/**")).toEqual([ACTION_PROBE, ACTION_PROBE_YAML]);
   });
 
+  it("the lessons directory gets a probe named as a lesson is, <id>.json", () => {
+    expect(directoryProbes(".github/darz/lessons/**")).toEqual([LESSON_PROBE]);
+  });
+
   it("a pattern that names a file at any depth has no gate directory, so no probe", () => {
     for (const p of DEFAULT_GATE_PATTERNS.filter((g) => g.startsWith("**/"))) expect(directoryProbes(p)).toEqual([]);
     expect(directoryProbes("Makefile")).toEqual([]);
@@ -82,13 +87,13 @@ describe("probe paths", () => {
   });
 
   it("a probe path that exists in the tree is dropped: the real file is judged instead", () => {
-    expect(probePaths(gateSet([], null), ".github/CODEOWNERS", [WORKFLOW_PROBE])).toEqual([ACTION_PROBE_YAML, ACTION_PROBE, WORKFLOW_PROBE_YAML]);
+    expect(probePaths(gateSet([], null), ".github/CODEOWNERS", [WORKFLOW_PROBE])).toEqual([ACTION_PROBE_YAML, ACTION_PROBE, LESSON_PROBE, WORKFLOW_PROBE_YAML]);
   });
 });
 
 describe("check 1 judges the probe paths", () => {
   it("a root CODEOWNERS that does not own .github/CODEOWNERS fails: adding that file replaces it", async () => {
-    const fx = withCodeowners("CODEOWNERS", "/CODEOWNERS @alice\n/.github/workflows/ @alice\n/.github/actions/ @alice\n/vitest.config.ts @alice\n");
+    const fx = withCodeowners("CODEOWNERS", "/CODEOWNERS @alice\n/.github/workflows/ @alice\n/.github/actions/ @alice\n/.github/darz/lessons/ @alice\n/vitest.config.ts @alice\n");
     const r = row(await run(fx), "gate_files_owned");
     expect(r.status).toBe("fail");
     expect(codes(r)).toEqual(["new_gate_paths_unowned"]);
@@ -96,7 +101,7 @@ describe("check 1 judges the probe paths", () => {
   });
 
   it("docs/CODEOWNERS in use: both earlier locations are probed", async () => {
-    const fx = withCodeowners("docs/CODEOWNERS", "/docs/CODEOWNERS @alice\n/.github/workflows/ @alice\n/.github/actions/ @alice\n/vitest.config.ts @alice\n");
+    const fx = withCodeowners("docs/CODEOWNERS", "/docs/CODEOWNERS @alice\n/.github/workflows/ @alice\n/.github/actions/ @alice\n/.github/darz/lessons/ @alice\n/vitest.config.ts @alice\n");
     const r = row(await run(fx), "gate_files_owned");
     expect(subjects(r, "new_gate_paths_unowned")).toEqual([".github/CODEOWNERS", "CODEOWNERS"]);
   });
@@ -114,7 +119,7 @@ describe("check 1 judges the probe paths", () => {
     // probe alone would pass a CODEOWNERS that an agent can get around.
     const fx = withCodeowners(
       ".github/CODEOWNERS",
-      "/.github/CODEOWNERS @alice\n/.github/workflows/*.yml @alice\n/.github/actions/**/action.yml @alice\n/vitest.config.ts @alice\n",
+      "/.github/CODEOWNERS @alice\n/.github/workflows/*.yml @alice\n/.github/actions/**/action.yml @alice\n/.github/darz/lessons/*.json @alice\n/vitest.config.ts @alice\n",
     );
     const r = row(await run(fx), "gate_files_owned");
     expect(r.status).toBe("fail");
@@ -130,7 +135,7 @@ describe("check 1 judges the probe paths", () => {
     const r = row(await run(fx), "gate_files_owned");
     expect(codes(r)).toEqual(["gate_files_unowned", "new_gate_paths_unowned"]);
     expect(subjects(r, "gate_files_unowned")).toEqual([".github/workflows/ci.yml", "vitest.config.ts"]);
-    expect(subjects(r, "new_gate_paths_unowned")).toEqual([WORKFLOW_PROBE_YAML, WORKFLOW_PROBE]);
+    expect(subjects(r, "new_gate_paths_unowned")).toEqual([LESSON_PROBE, WORKFLOW_PROBE_YAML, WORKFLOW_PROBE]);
   });
 
   it("a catch-all owner owns every probe, and the record lists what was probed", async () => {
@@ -162,7 +167,7 @@ describe("check 1 judges the probe paths", () => {
     fx.tree = tree([".github/CODEOWNERS", ".github/workflows/ci.yml", WORKFLOW_PROBE, "vitest.config.ts"]);
     const r = row(await run(fx), "gate_files_owned");
     expect(r.details?.gateFiles).toContain(WORKFLOW_PROBE);
-    expect(r.details?.probedPaths).toEqual([ACTION_PROBE_YAML, ACTION_PROBE, WORKFLOW_PROBE_YAML]);
+    expect(r.details?.probedPaths).toEqual([ACTION_PROBE_YAML, ACTION_PROBE, LESSON_PROBE, WORKFLOW_PROBE_YAML]);
   });
 
   it("an unowned probe fails even when the tree is truncated: its ownership does not depend on the tree", async () => {

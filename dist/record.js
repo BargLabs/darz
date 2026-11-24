@@ -14,6 +14,7 @@ export function buildRecord(a, options) {
         apiUrl: a.apiUrl,
         defaultBranch: a.defaultBranch,
         commitSha: a.commitSha,
+        ref: a.ref,
         readAt: a.readAt,
         options: {
             agents: [...options.agents],
@@ -21,6 +22,7 @@ export function buildRecord(a, options) {
             gates: [...options.gates],
             merges: options.merges,
             graphqlRulesetRoles: options.graphqlRulesetRoles === true,
+            ref: options.ref ?? null,
         },
         classicProtection: a.classicProtection,
         reads,

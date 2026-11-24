@@ -5,8 +5,8 @@ import { CODEOWNERS_LOCATIONS } from "./codeowners.js";
 import { globBody } from "./glob.js";
 
 /**
- * The files that judge an agent's work: CI and actions, test configuration
- * and coverage configuration. The CODEOWNERS file in use is added by the
+ * The files that judge an agent's work: CI and actions, test configuration,
+ * coverage configuration and Darz lessons. The CODEOWNERS file in use is added by the
  * caller, as is Darz's own configuration file.
  */
 export const DEFAULT_GATE_PATTERNS: readonly string[] = [
@@ -28,6 +28,7 @@ export const DEFAULT_GATE_PATTERNS: readonly string[] = [
   "**/.codecov.yml",
   "**/.coveragerc",
   "**/sonar-project.properties",
+  ".github/darz/lessons/**",
 ];
 
 export const DARZ_CONFIG_PATH = ".github/darz.json";
@@ -173,6 +174,8 @@ export const PROBE_NAME = "darz-probe-new-file";
 const DEFAULT_DIRECTORY_PROBES: Readonly<Record<string, readonly string[]>> = {
   ".github/workflows/**": [".github/workflows/darz-probe-new-workflow.yml", ".github/workflows/darz-probe-new-workflow.yaml"],
   ".github/actions/**": [".github/actions/darz-probe-new-action/action.yml", ".github/actions/darz-probe-new-action/action.yaml"],
+  // A lesson is <id>.json, so a CODEOWNERS that owns only *.json there owns every new lesson.
+  ".github/darz/lessons/**": [".github/darz/lessons/darz-probe-new-lesson.json"],
 };
 
 /**

@@ -23,6 +23,18 @@ export interface TreeEntry {
   path?: string;
   type?: string;
   sha?: string;
+  mode?: string;
+  /** Blobs only: the size in bytes. */
+  size?: number;
+}
+
+/** One entry of a directory listing from GET /repos/{owner}/{repo}/contents/{path}. */
+export interface ContentEntry {
+  type?: string;
+  name?: string;
+  path?: string;
+  sha?: string;
+  size?: number;
 }
 
 export interface TreeData {
@@ -103,6 +115,8 @@ export interface PullData {
   merged_at?: string | null;
   updated_at?: string | null;
   merge_commit_sha?: string | null;
+  base?: { ref?: string } | null;
+  head?: { sha?: string } | null;
 }
 
 export interface GitCommitData {
@@ -121,6 +135,8 @@ export interface PullFileData {
 export interface ReviewData {
   user?: { login?: string; type?: string } | null;
   state?: string;
+  /** The commit the review was made on. */
+  commit_id?: string | null;
 }
 
 export interface AppData {

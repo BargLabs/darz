@@ -19,6 +19,8 @@ export interface RecordOptions {
    * only). Whether it ran is in `reads`: an entry starting `POST `.
    */
   graphqlRulesetRoles?: boolean;
+  /** `--ref` as given, or null when check 7 ran over the default branch's head. */
+  ref?: string | null;
 }
 
 export interface DarzRecord {
@@ -28,6 +30,8 @@ export interface DarzRecord {
   apiUrl: string;
   defaultBranch: string | null;
   commitSha: string | null;
+  /** The commit check 7 ran lessons over. */
+  ref: string | null;
   readAt: string;
   options: RecordOptions;
   classicProtection: Assessment["classicProtection"];
@@ -48,6 +52,7 @@ export function buildRecord(a: Assessment, options: RecordOptions): DarzRecord {
     apiUrl: a.apiUrl,
     defaultBranch: a.defaultBranch,
     commitSha: a.commitSha,
+    ref: a.ref,
     readAt: a.readAt,
     options: {
       agents: [...options.agents],
@@ -55,6 +60,7 @@ export function buildRecord(a: Assessment, options: RecordOptions): DarzRecord {
       gates: [...options.gates],
       merges: options.merges,
       graphqlRulesetRoles: options.graphqlRulesetRoles === true,
+      ref: options.ref ?? null,
     },
     classicProtection: a.classicProtection,
     reads,

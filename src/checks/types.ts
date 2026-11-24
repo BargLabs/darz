@@ -10,6 +10,7 @@ export const CHECK_IDS = [
   "agents_cannot_bypass",
   "required_checks_fail_closed",
   "agent_merges_touching_gates",
+  "lessons_hold",
 ] as const;
 
 export type CheckId = (typeof CHECK_IDS)[number];
@@ -39,4 +40,5 @@ export const CHECK_TITLES: Record<CheckId, string> = {
   agents_cannot_bypass: "Agents cannot bypass the rules or administer the repository",
   required_checks_fail_closed: "At least one status check is required",
   agent_merges_touching_gates: "Recent merges by agent identities that changed gate files",
+  lessons_hold: "Approved lessons hold at the commit read",
 };

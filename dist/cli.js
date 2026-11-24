@@ -23,6 +23,8 @@ Options:
   --out <dir>            output directory (default ./darz-out)
   --api-url <url>        API base URL (default ${DEFAULT_API_URL})
   --token-env <name>     environment variable holding the token (default GITHUB_TOKEN)
+  --ref <sha>            the commit check 7 runs lessons over (default: the default
+                         branch's head); lessons are always read from the head
   --graphql-ruleset-roles[=true|false]
                          also read ruleset bypass role names with GitHub's GraphQL API
                          (POST, compiled read-only queries; off by default)
@@ -34,7 +36,7 @@ unverifiable; 3 the repository could not be read; 64 usage error.
 `;
 class UsageError extends Error {
 }
-const VALUE_FLAGS = new Set(["--agent", "--agent-app", "--gate", "--merges", "--out", "--api-url", "--token-env"]);
+const VALUE_FLAGS = new Set(["--agent", "--agent-app", "--gate", "--merges", "--out", "--api-url", "--token-env", "--ref"]);
 function parseArgs(argv) {
     const p = {
         repo: "",
@@ -46,6 +48,7 @@ function parseArgs(argv) {
         apiUrl: DEFAULT_API_URL,
         tokenEnv: "GITHUB_TOKEN",
         graphqlRulesetRoles: false,
+        ref: null,
     };
     const positional = [];
     for (let i = 0; i < argv.length; i++) {
@@ -106,6 +109,11 @@ function parseArgs(argv) {
                 break;
             case "--api-url":
                 p.apiUrl = checkApiUrl(value);
+                break;
+            case "--ref":
+                if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value))
+                    throw new UsageError("--ref must be a full commit SHA: 40 or 64 lower-case hex characters");
+                p.ref = value;
                 break;
             case "--token-env":
                 if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value))
@@ -183,6 +191,7 @@ export async function main(argv, io) {
             gates: a.gates,
             merges: a.merges,
             graphqlRulesetRoles: a.graphqlRulesetRoles,
+            ...(a.ref !== null ? { ref: a.ref } : {}),
             ...(io.now ? { now: io.now } : {}),
         });
         const record = buildRecord(assessment, {
@@ -191,6 +200,7 @@ export async function main(argv, io) {
             gates: a.gates,
             merges: a.merges,
             graphqlRulesetRoles: a.graphqlRulesetRoles,
+            ref: a.ref,
         });
         const { bytes, sha256 } = serializeRecord(record);
         guard(bytes.toString("utf8"));
@@ -203,7 +213,8 @@ export async function main(argv, io) {
         const head = assessment.commitSha
             ? `${assessment.defaultBranch} @ ${assessment.commitSha.slice(0, 12)}`
             : (assessment.defaultBranch ?? "default branch unread");
-        out(`${TOOL_NAME} ${TOOL_VERSION}  ${assessment.repository}  ${head}  read ${assessment.readAt}\n`);
+        const lessonsAt = assessment.ref && assessment.ref !== assessment.commitSha ? `  lessons run at ${assessment.ref.slice(0, 12)}` : "";
+        out(`${TOOL_NAME} ${TOOL_VERSION}  ${assessment.repository}  ${head}${lessonsAt}  read ${assessment.readAt}\n`);
         const width = Math.max(...assessment.checks.map((c) => c.id.length));
         for (const c of assessment.checks) {
             const why = c.reasons.map((r) => r.code).join(", ");

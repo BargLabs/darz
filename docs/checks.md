@@ -1,6 +1,6 @@
 # Darz checks (v0.1, GitHub)
 
-Each check gives `pass`, `fail` or `unverifiable`. Check 6 gives `context` instead of pass or fail. Each row in the record also lists its reasons and the endpoints (`GET /path`) and repository files it read.
+Each check gives `pass`, `fail` or `unverifiable`. Check 6 gives `context` instead of pass or fail. Check 7 gives `context` when no lesson is in force, never `pass`. Each row in the record also lists its reasons and the endpoints (`GET /path`) and repository files it read.
 
 Rules that hold for every check:
 
@@ -62,6 +62,9 @@ GitHub leaves `required_pull_request_reviews` or `required_status_checks` out of
   - a ruleset's `Integration` bypass actors;
   - CODEOWNERS entries;
   - the authors of the merged pull requests read for check 6.
+- **GitHub Actions is a platform identity.** `github-actions[bot]` (app 15368) is the identity every workflow's token acts as, and most repositories pin their required checks to it. Darz does not detect it from the collaborators list, CODEOWNERS or merge authors.
+  - It is still detected as a ruleset's `Integration` bypass actor, because then any workflow can go around the rules, and check 4 fails.
+  - Declared with `--agent-app` or in `.github/darz.json`, it is an agent like any other.
 
 Darz looks up each app slug with `GET /apps/{slug}` so that an app known by slug and an app known by ID count as one identity.
 - **Slug does not resolve:** if a declared app's slug does not resolve (a 404 because it is misspelt, or a read that failed) and the declaration gives no id, checks 3, 4 and 6 are `unverifiable` with reason `agent_app_unresolved`, and so is check 5 when a required check is pinned to an app. A check about an app that may not exist cannot pass.
@@ -83,6 +86,7 @@ Gate files are the paths in the default branch's tree that match any of these:
 
 - **CI and actions:** `.github/workflows/**`, `.github/actions/**`.
 - **The CODEOWNERS file in use**, and Darz's own config, `.github/darz.json`.
+- **Lessons:** `.github/darz/lessons/**`. A lesson is a check Darz runs (check 7), so changing one changes the gate.
 - **Test configuration:** `**/jest.config.*`, `**/vitest.config.*`, `**/vitest.workspace.*`, `**/playwright.config.*`, `**/karma.conf.*`, `**/.mocharc*`, `**/pytest.ini`, `**/tox.ini`, `**/noxfile.py`, `**/conftest.py`, `**/phpunit.xml*`.
 - **Coverage:** `**/.nycrc*`, `**/codecov.yml`, `**/.codecov.yml`, `**/.coveragerc`, `**/sonar-project.properties`.
 - **Files that hold test or coverage settings.** Darz reads every `**/package.json`, `**/vite.config.*`, `**/pyproject.toml` and `**/setup.cfg` in the tree, outside `node_modules` (`GET /repos/{owner}/{repo}/git/blobs/{sha}`), and counts one as a gate file only when it configures tests:
@@ -113,6 +117,7 @@ A gate can also change through a file that does not exist yet. Checks 1 and 3 ju
 - **A new file in each gate directory:**
   - `.github/workflows/darz-probe-new-workflow.yml` and `.github/workflows/darz-probe-new-workflow.yaml` for `.github/workflows/**`. GitHub runs only workflow files directly in that directory, so the probes are there. It runs both extensions, so a CODEOWNERS that owns only `*.yml` leaves the `.yaml` probe unowned;
   - `.github/actions/darz-probe-new-action/action.yml` and `.github/actions/darz-probe-new-action/action.yaml` for `.github/actions/**`: a new local action, under either name GitHub reads;
+  - `.github/darz/lessons/darz-probe-new-lesson.json` for `.github/darz/lessons/**`: a new lesson, named as a lesson is, so a CODEOWNERS that owns only `*.json` there owns it;
   - for your own patterns (`--gate` or the config's `gates`), the pattern's literal leading directories, followed by its wildcard part with `**` segments dropped (or replaced by `darz-probe-new-file` when last), each `*` replaced by `darz-probe-new-file` and each `?` by `z`. For example, `ci/**` gives `ci/darz-probe-new-file`, and `scripts/*.sh` gives `scripts/darz-probe-new-file.sh`.
 
   A pattern with no wildcard names one file, and a pattern that starts with a wildcard (`**/conftest.py`) names files at any depth. Neither has a gate directory, so neither gets a probe. A new `conftest.py` in a new directory is owned only by a pattern that matches at any depth, such as `*` or `conftest.py`, and Darz does not probe for it.
@@ -294,7 +299,7 @@ The record lists the GraphQL read as one entry, `POST <path>#<query name>`, with
   - `required_check_pinned_to_agent_app`, naming the check and the app.
 - **`unverifiable`:** `rules_unreadable`, `classic_protection_unreadable` or `field_missing`. When a required check is pinned to an app, also `no_agent_identities`, `agent_app_unresolved`, `agent_app_id_mismatch`, `agent_app_ids_conflict`, `agent_app_slugs_share_id`, `config_invalid` or `config_unreadable`: the app could be an agent's that Darz cannot name. A source Darz could not read could pin a check or require another one, so with a source unreadable the row is never a pass. An unpinned check is not a fail while a source that could pin it is unreadable.
 - **Context (`details`):** each required check with the app ids it is pinned to (empty for any source), and whether the branch must be up to date before merging (`true`, `false` or `"unknown"`).
-- **Note:** a check pinned to GitHub Actions is produced by a workflow. Whether an agent can change that workflow is what check 1 answers.
+- **Pinned to GitHub Actions:** unless GitHub Actions is an agent identity (declared, or a ruleset bypass actor), a check pinned to it counts as pinned to a non-agent app. `details.pinnedToGitHubActions` lists such checks, and a context line says what the pin does not stop: any workflow in the repository with `checks: write` can post a check run with that name as GitHub Actions. Whether a workflow can is not checked yet. Whether an agent can change a workflow is what check 1 answers.
 
 ## 6. `agent_merges_touching_gates`
 
@@ -308,7 +313,7 @@ This check is context: it never passes or fails.
   - for each agent pull request: its number, link, author, merge time, the gate files it changed, the candidate files it changed whose contents at the merge are unknown (`candidatesUnknown`), and its approvers. An approver is a reviewer whose latest review that sets a state is `APPROVED`; `COMMENTED` and `PENDING` reviews do not set a state;
   - counts of agent merges, and of agent merges that touched gate files.
 
-  It gives counts and links only, with no judgement of intent. If fewer than N merged pull requests exist, the row says how many were read.
+  It gives counts and links only, with no judgement of intent. If fewer than N merged pull requests exist, the row says how many were read. Merges by `github-actions[bot]` are not counted unless it is an agent identity; a context line says how many were left out.
 
   **Which merges are read.** The list is sorted by update time, not merge time, and GitHub has no sort by merge time. A pull request merged long ago and updated since (for example by a comment) comes early in the list. Merging sets `updated_at`, so a pull request's merge time is never later than its update time. Darz therefore reads until the oldest `updated_at` read is older than the Nth newest `merged_at` read: every pull request after that point merged earlier than the Nth, so none of them can be among the last N. It also stops at the end of the list.
 
@@ -338,6 +343,65 @@ This check is context: it never passes or fails.
   - `agent_app_unresolved`, `agent_app_id_mismatch`, `agent_app_ids_conflict` or `agent_app_slugs_share_id`;
   - `config_invalid` or `config_unreadable`.
 
+## 7. `lessons_hold`
+
+A lesson is a rule a team has learnt, kept as a file and run as a check. Each lesson is one JSON file at `.github/darz/lessons/<id>.json`, described by [`schema/lesson-0.1.schema.json`](../schema/lesson-0.1.schema.json):
+
+- `id`: 3 to 64 of `a-z`, `0-9` and `-`, equal to the file name without `.json`;
+- `statement`: the lesson in one sentence;
+- `evidence`: one or more `{ "kind", "ref" }`, where the mistake happened. `kind` is `commit` (a full SHA), `pull_request` or `issue` (a number), or `url` (an https URL);
+- `check`: `{ "kind", "paths", "pattern", "match" }`. `kind` is `forbid` or `require`. `paths` are globs, matched against the whole path as gate patterns are. `match` is `literal` (the line contains the pattern) or `regex` (a JavaScript regular expression, compiled with the `u` flag);
+- `retired`, optional: `{ "on": "YYYY-MM-DD", "reason" }`. A retired lesson is not in force.
+
+**Where lessons come from.** Lessons are read from the default branch's head, always: `GET /repos/{owner}/{repo}/contents/.github/darz/lessons?ref={head}`, then each file by its blob. The check runs them over the files at the commit `--ref` names, or the head when it is not given. A pull request's head given as `--ref` therefore cannot delete or loosen the lesson that judges it: its lesson files are not read. Every other check reads the head, whatever `--ref` is.
+
+**Approval.** A lesson is in force only when the latest change to its file was approved by a person other than its author, and not by an agent:
+
+- the latest change is the first commit of `GET /repos/{owner}/{repo}/commits?sha={head}&path={file}&per_page=1`, the newest commit on the default branch that touched the file. This is one item of one page, not an inventory;
+- its pull request is the one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` lists as merged into the default branch. If it lists several, the one whose `merge_commit_sha` is the commit is chosen; if none can be singled out, the approval is unreadable;
+- every page of that pull request's reviews is read. A reviewer counts by their latest review that sets a state (`APPROVED`, `CHANGES_REQUESTED` or `DISMISSED`). An approval counts only if it is `APPROVED`, its `commit_id` is the pull request's final head, and its reviewer is neither the pull request's author, nor an agent identity (declared or detected), nor a bot account.
+
+A lesson file pushed with no pull request into the default branch is `lesson_unapproved` with subject `no_pull_request`. One whose pull request has no counting approval is `lesson_unapproved`, naming the file and what was missing. Either way the lesson is not enforced and the row **fails**: a lesson changed without that approval is a breach of the gate, so it is never quietly dropped. This holds for a retired lesson too, since retiring a lesson is a change to its file. If any of those reads does not end in `read`, the lesson and the row are `unverifiable` with `lesson_approval_unreadable`.
+
+Deleting a lesson file removes it from the directory, so check 7 cannot see it. Lesson files are gate files: check 1 requires them to have a code owner and code-owner review to be required, and check 6 lists agent merges that changed them.
+
+**Matching.** Matching is per line; a line ends at `\n`, and a `\r` before it is not part of the line.
+
+- `forbid`: no line in any file matching `paths` may match. Each matching line is a finding, `lesson_violated` with `<id>: <path>:<line>`.
+- `require`: every file matching `paths` must have at least one matching line (`<id>: <path> has no matching line`), and at least one file must match `paths` (`<id>: no_matching_files`).
+
+A reviewer approving a lesson is approving its pattern. Patterns come only from approved lesson files on the default branch; the files they run over do not choose them. A regex that backtracks badly can still be slow on a long line, which is one reason lines over 4,096 characters are not scanned.
+
+**Bounds.**
+
+- At most 100 lessons (`too_many_lessons`; nothing else is read).
+- Files are read by blob, `GET /repos/{owner}/{repo}/git/blobs/{sha}`, from the tree at the commit read; each blob once. At most 3,000 distinct files across all lessons (`lesson_read_cap`; none is read).
+- A file over 1 MiB (by the tree's size, or after reading), or with a line over 4,096 characters, is not scanned: `file_too_large`, and that lesson is `unverifiable`.
+- A truncated tree at the commit read gives `tree_truncated`; an unreadable one, `tree_unreadable`.
+
+**Status.** Each lesson is `pass`, `fail`, `unverifiable` or `not_in_force` (retired). The row is:
+
+- `fail` if any lesson in force fails, or any lesson is unapproved;
+- otherwise `unverifiable` if any lesson is unverifiable or invalid;
+- otherwise `pass` if at least one lesson is in force;
+- otherwise `context`, with reason `no_lessons`. No lessons is never a pass, and, like check 6, `context` does not change the exit code.
+
+- **Details:** the default branch's head, the commit read (`ref`), and for each lesson file: its id, file, status, reasons, the approving reviewers, the commit and pull request the approval came from, and up to 50 findings with their count.
+- **SARIF:** one result per lesson that fails or is unverifiable. A violated lesson is located at each file and line it found (a `require` lesson's file with no match at line 1); an unapproved or unverifiable one at its lesson file. A failing lesson is level `error`, an unverifiable one `warning`. The run's `properties.ref` is the commit read.
+- **`fail`:**
+  - `lesson_unapproved`;
+  - `lesson_violated`.
+- **`unverifiable`:**
+  - `lessons_unreadable`: the directory, or a lesson file, could not be read;
+  - `too_many_lessons`;
+  - `lesson_invalid`: a file that does not parse or validate, a file whose name is not `<id>.json`, or a directory, naming the file and the problem;
+  - `lesson_approval_unreadable`;
+  - `tree_unreadable` or `tree_truncated`;
+  - `lesson_read_cap`;
+  - `file_too_large`;
+  - `lesson_file_unreadable`: a file a lesson checks could not be read.
+- **`context`:** `no_lessons`.
+
 ## All reasons
 
 | Reason | Status | Checks | Meaning |
@@ -349,8 +413,8 @@ This check is context: it never passes or fails.
 | `field_missing` | unverifiable | 1-5 | A field the check needs is missing from a response that was read; the subjects name it. |
 | `rules_unreadable` | unverifiable | 1-5 | The effective rules could not be read. |
 | `classic_protection_unreadable` | unverifiable | 1-5 | The branch is protected and classic protection could not be read. |
-| `tree_unreadable` | unverifiable | 1, 3 | The tree could not be read. |
-| `tree_truncated` | unverifiable | 1, 3 | GitHub truncated the tree. |
+| `tree_unreadable` | unverifiable | 1, 3, 7 | The tree could not be read: at the default branch's head, or for check 7 at `--ref`. |
+| `tree_truncated` | unverifiable | 1, 3, 7 | GitHub truncated the tree. |
 | `codeowners_unreadable` | unverifiable | 1, 3 | A CODEOWNERS file could not be read. |
 | `codeowners_errors_unreadable` | unverifiable | 1, 3 | `codeowners/errors` could not be read. |
 | `codeowners_error_ambiguous` | unverifiable | 1, 3 | A reported CODEOWNERS line whose error is of a shape not verified (an unknown kind, or no `column` at an owner) is the last match, and either its unflagged owners or an earlier line could own the path. |
@@ -394,3 +458,13 @@ This check is context: it never passes or fails.
 | `pull_request_reviews_unreadable` | unverifiable | 6 | An agent pull request's reviews could not be read. |
 | `gate_candidate_at_merge_unreadable` | unverifiable | 6 | A candidate file an agent pull request changed could not be read or parsed as it was at the merge. |
 | `gate_candidates_at_merge_over_cap` | unverifiable | 6 | Reading changed candidate files at their merges would pass 100 reads; these pull requests were not read. |
+| `no_lessons` | context | 7 | No lesson is in force on the default branch. Never a pass. |
+| `lessons_unreadable` | unverifiable | 7 | The lessons directory, or a lesson file, could not be read. |
+| `too_many_lessons` | unverifiable | 7 | More than 100 entries in the lessons directory. |
+| `lesson_invalid` | unverifiable | 7 | A file in the lessons directory is not a valid lesson, naming it and the problem. |
+| `lesson_unapproved` | fail | 7 | The latest change to a lesson file was not approved on its pull request's final head by a person other than its author and not an agent, or was pushed with no pull request (`no_pull_request`). |
+| `lesson_approval_unreadable` | unverifiable | 7 | The lesson file's latest commit, its pull request, or the reviews could not be read. |
+| `lesson_violated` | fail | 7 | An approved lesson in force does not hold, with each file and line. |
+| `file_too_large` | unverifiable | 7 | A file a lesson checks is over 1 MiB or has a line over 4,096 characters. |
+| `lesson_read_cap` | unverifiable | 7 | The lessons in force check more than 3,000 files. |
+| `lesson_file_unreadable` | unverifiable | 7 | A file a lesson checks could not be read. |

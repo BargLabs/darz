@@ -12,6 +12,7 @@ import {
 } from "../gates.js";
 import type { ReadResult } from "../github/client.js";
 import type { RulesetRolesRead } from "../github/graphql.js";
+import type { LessonsRead } from "../github/lessons.js";
 import {
   type MergeCandidates,
   type PullDetail,
@@ -21,8 +22,18 @@ import {
   ownerType,
 } from "../github/snapshot.js";
 import type { AppData, InstallationData, OrgMembershipData } from "../github/types.js";
-import { type AgentIdentity, type AppIdConflict, type AppSlugShare, appLabel, identityName, matchLogin } from "../identities.js";
+import {
+  type AgentIdentity,
+  type AppIdConflict,
+  type AppSlugShare,
+  GITHUB_ACTIONS_APP_ID,
+  appLabel,
+  identityName,
+  isGitHubActionsLogin,
+  matchLogin,
+} from "../identities.js";
 import { type Setting, pullRequestRequired, reviewSetting, statusChecks } from "../protection.js";
+import { checkLessonsHold } from "./lessons.js";
 import { ReasonList, reason } from "./reasons.js";
 import { CHECK_IDS, CHECK_TITLES, type CheckId, type CheckRow, type CheckStatus } from "./types.js";
 
@@ -61,6 +72,11 @@ export interface EvalInput {
    * its read failed or was incomplete.
    */
   rulesetRoles?: RulesetRolesRead;
+  /**
+   * Check 7's reads: lesson files from the default branch's head, their
+   * approvals, and the files at the commit read. Undefined when not read.
+   */
+  lessons?: LessonsRead;
 }
 
 function makeRow(
@@ -945,6 +961,7 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
   const unknowns = new ReasonList();
   const read = [...sc.read];
   const context: string[] = [];
+  const pinnedToGitHubActions: string[] = [];
   const unknownCauses = () => {
     for (const c of sc.causes) {
       if (c === "field_missing") unknowns.add(c, ...sc.missingFields);
@@ -962,6 +979,17 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
     }
     const unpinned = sc.checks.filter((c) => c.appIds.length === 0).map((c) => c.context);
     if (unpinned.length > 0 && !sc.incomplete) fails.add("required_check_unpinned", ...unpinned);
+    // GitHub Actions is a platform identity, not an agent, unless declared or
+    // allowed to bypass a ruleset. A check pinned to it passes, but any workflow
+    // with checks: write can post a check run as it; that is not read yet.
+    if (!input.identities.some((i) => i.kind === "app" && i.appId === GITHUB_ACTIONS_APP_ID)) {
+      pinnedToGitHubActions.push(...sc.checks.filter((c) => c.appIds.includes(GITHUB_ACTIONS_APP_ID)).map((c) => c.context));
+    }
+    if (pinnedToGitHubActions.length > 0) {
+      context.push(
+        `Required checks pinned to GitHub Actions (app ${GITHUB_ACTIONS_APP_ID}): ${pinnedToGitHubActions.join(", ")}. Any workflow in the repository with checks: write can post a check run with that name as GitHub Actions; whether one can is not checked.`,
+      );
+    }
     if (sc.incomplete) unknownCauses();
     // A pinned check could be pinned to an agent app that Darz cannot name:
     // none is known, a declared app's id is unknown or contradicted, or the
@@ -987,7 +1015,11 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
     "config_invalid",
     "config_unreadable",
   ]);
-  const details = { requiredChecks: sc.checks, mustBeUpToDate: sc.strict === null ? "unknown" : sc.strict };
+  const details = {
+    requiredChecks: sc.checks,
+    mustBeUpToDate: sc.strict === null ? "unknown" : sc.strict,
+    pinnedToGitHubActions,
+  };
   return makeRow("required_checks_fail_closed", d.status, d.reasons, read, context, details);
 }
 
@@ -1078,6 +1110,16 @@ export function checkAgentMerges(input: EvalInput): CheckRow {
   if (m.merged.length < m.requested) {
     context.push(`${m.merged.length} merged pull requests were read; ${m.requested} were requested.`);
   }
+  const actionsMerges = m.merged.filter((p) => {
+    const login = p.user?.login;
+    return typeof login === "string" && isGitHubActionsLogin(login) && !matchLogin(identities, login);
+  }).length;
+  if (actionsMerges > 0) {
+    const one = actionsMerges === 1;
+    context.push(
+      `${actionsMerges} merged pull request${one ? "" : "s"} by github-actions[bot] ${one ? "is" : "are"} not counted: it is GitHub Actions' identity for workflows, not an agent.`,
+    );
+  }
   const details = {
     requested: m.requested,
     mergedRead: m.merged.length,
@@ -1130,5 +1172,6 @@ export function evaluate(input: EvalInput): CheckRow[] {
     checkAgentsCannotBypass(input),
     checkRequiredChecks(input),
     checkAgentMerges(input),
+    checkLessonsHold(input.lessons, input.identities, input.snap.repoEndpoint),
   ];
 }
