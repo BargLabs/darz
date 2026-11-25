@@ -39,6 +39,11 @@ describe("README", () => {
     expect(actionRefs(readme).length).toBeGreaterThan(0);
     expect(unpinnedUses(readme, (u) => u.startsWith("BargLabs/darz@<full"))).toEqual([]);
   });
+  it("names the release of every SHA-pinned action in a version comment", () => {
+    const pinned = [...readme.matchAll(/^.*\buses:\s*[\w.-]+\/[\w./-]+@[0-9a-f]{40}\b.*$/gm)].map((m) => m[0]);
+    expect(pinned.length).toBeGreaterThan(0);
+    expect(pinned.filter((line) => !/@[0-9a-f]{40} # v\d+\.\d+\.\d+$/.test(line))).toEqual([]);
+  });
 
   it("documents the exit codes", () => {
     for (const code of ["`0`", "`1`", "`2`", "`3`"]) expect(readme).toContain(code);

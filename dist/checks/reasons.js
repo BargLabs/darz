@@ -44,6 +44,8 @@ export const REASONS = {
     no_required_checks: "No status check is required before merging.",
     required_check_unpinned: "A required check is not pinned to the app that must report it, so anyone who can post a status or check run with that name can satisfy it, an agent included.",
     required_check_pinned_to_agent_app: "A required check is pinned to an agent app, so the agent reports its own check.",
+    required_check_actions_pin_unreviewed: "A required check is pinned only to GitHub Actions, and check 1, 2 or 3 fails, so a pull request can add a workflow that posts the check as GitHub Actions without that change being reviewed: an agent can satisfy it.",
+    required_check_actions_pin_review_unknown: "A required check is pinned only to GitHub Actions, and whether workflow changes need review (checks 1, 2 and 3) could not be verified, so whether an agent can add a workflow that posts the check is unknown.",
     agent_app_id_mismatch: "A declared agent app's id differs from the id GitHub gives for its slug, so which app is the agent is unknown.",
     agent_app_ids_conflict: "One agent app slug is declared with different ids, in .github/darz.json or --agent-app, so which app is the agent is unknown.",
     agent_app_slugs_share_id: "Two different declared agent app slugs have the same app id, so at least one slug is wrong; Darz keeps one of them, and the agent's bot account may go unrecognised.",

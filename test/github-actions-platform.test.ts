@@ -10,8 +10,10 @@
 // - a ruleset that lets GitHub Actions bypass it still fails check 4, since
 //   then any workflow can go around the rules;
 // - declared explicitly, it is still an agent;
-// - check 5 passes a check pinned to it, and says in its context that a
-//   workflow with checks: write can post that app's check runs;
+// - its pin alone gates nothing, since a pull request can add a workflow that
+//   posts the check as GitHub Actions: check 5 passes a check pinned only to
+//   it while checks 1, 2 and 3 pass, fails when one fails, and is
+//   unverifiable when one is; a second pin to another app still gates;
 // - check 6 says how many of its merges were left out.
 
 import { describe, expect, it } from "vitest";
@@ -63,14 +65,62 @@ describe("github-actions[bot] is a platform identity, not an agent", () => {
     expect(a.identities.map((i) => i.login ?? i.slug)).toEqual(["coder-agent"]);
   });
 
-  it("check 5 passes a required check pinned to GitHub Actions, and says what that pin does not stop", async () => {
-    const r = row(await run(withWorkflowPullRequest()), "required_checks_fail_closed");
+  it("check 5 passes a check pinned only to GitHub Actions while checks 1, 2 and 3 pass, and says why", async () => {
+    const a = await run(withWorkflowPullRequest());
+    for (const id of ["gate_files_owned", "human_review_required", "writer_not_approver"]) expect(row(a, id).status).toBe("pass");
+    const r = row(a, "required_checks_fail_closed");
     expect(r.status).toBe("pass");
     expect(codes(r)).toEqual([]);
     expect(r.details?.pinnedToGitHubActions).toEqual(["test"]);
-    const line = r.context.find((c) => c.startsWith("Required checks pinned to GitHub Actions"));
-    expect(line).toContain("test");
-    expect(line).toContain("checks: write");
+    expect(r.context).toContain(
+      "Required checks pinned only to GitHub Actions (app 15368): test. " +
+        "The pin alone does not gate them: a pull request from a branch in this repository can add or change a workflow that holds checks: write and posts a check run with that name as GitHub Actions, and GitHub counts that run. " +
+        "They hold only while workflow changes need review, which is checks 1, 2 and 3. Checks 1, 2 and 3 pass. " +
+        "Not checked: an existing workflow that holds checks: write and runs code a pull request controls can post the same run without the pull request changing a workflow.",
+    );
+  });
+
+  it("check 5 fails a check pinned only to GitHub Actions when check 1 fails", async () => {
+    const fx = withWorkflowPullRequest();
+    fx.rules = [[pullRequestRule({ ...GOOD_PR_PARAMS, require_code_owner_review: false }), statusChecksRule(["test"])]];
+    const a = await run(fx);
+    expect(row(a, "gate_files_owned").status).toBe("fail");
+    const r = row(a, "required_checks_fail_closed");
+    expect(r.status).toBe("fail");
+    expect(r.reasons).toEqual([expect.objectContaining({ code: "required_check_actions_pin_unreviewed", subjects: ["test"] })]);
+    expect(r.context.some((c) => c.includes("Check 1 does not pass."))).toBe(true);
+  });
+
+  it("check 5 fails it when check 2 fails, though check 1 passes", async () => {
+    const fx = withWorkflowPullRequest();
+    fx.rules = [[pullRequestRule({ ...GOOD_PR_PARAMS, require_last_push_approval: false }), statusChecksRule(["test"])]];
+    const a = await run(fx);
+    expect(row(a, "gate_files_owned").status).toBe("pass");
+    expect(row(a, "human_review_required").status).toBe("fail");
+    const r = row(a, "required_checks_fail_closed");
+    expect(codes(r)).toEqual(["required_check_actions_pin_unreviewed"]);
+    expect(r.context.some((c) => c.includes("Checks 2 and 3 do not pass."))).toBe(true);
+  });
+
+  it("check 5 is unverifiable for it when checks 1, 2 and 3 do not fail but one is unverifiable", async () => {
+    const fx = withWorkflowPullRequest();
+    const { dismiss_stale_reviews_on_push: _, ...withoutDismiss } = GOOD_PR_PARAMS;
+    fx.rules = [[pullRequestRule(withoutDismiss), statusChecksRule(["test"])]];
+    const a = await run(fx);
+    expect(row(a, "human_review_required").status).toBe("unverifiable");
+    const r = row(a, "required_checks_fail_closed");
+    expect(r.status).toBe("unverifiable");
+    expect(codes(r)).toEqual(["required_check_actions_pin_review_unknown"]);
+  });
+
+  it("check 5 does not count a check also pinned to another app by another source, since GitHub enforces both pins", async () => {
+    const fx = withWorkflowPullRequest();
+    fx.rules = [[pullRequestRule({ ...GOOD_PR_PARAMS, require_code_owner_review: false }), statusChecksRule(["test"]), statusChecksRule(["test"], true, 43, 777)]];
+    const r = row(await run(fx), "required_checks_fail_closed");
+    expect(r.details?.requiredChecks).toEqual([{ context: "test", appIds: [777, ACTIONS_APP_ID] }]);
+    expect(r.details?.pinnedToGitHubActions).toEqual([]);
+    expect(codes(r)).not.toContain("required_check_actions_pin_unreviewed");
+    expect(r.context.some((c) => c.startsWith("Required checks pinned only to GitHub Actions"))).toBe(false);
   });
 
   it("check 5 has no such line when no required check is pinned to GitHub Actions", async () => {
@@ -78,7 +128,7 @@ describe("github-actions[bot] is a platform identity, not an agent", () => {
     fx.rules = [[pullRequestRule(GOOD_PR_PARAMS), statusChecksRule(["test"], true, 42, 777)]];
     const r = row(await run(fx), "required_checks_fail_closed");
     expect(r.details?.pinnedToGitHubActions).toEqual([]);
-    expect(r.context.some((c) => c.startsWith("Required checks pinned to GitHub Actions"))).toBe(false);
+    expect(r.context.some((c) => c.startsWith("Required checks pinned only to GitHub Actions"))).toBe(false);
   });
 
   it("check 6 leaves its merges out and says how many", async () => {

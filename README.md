@@ -90,7 +90,7 @@ jobs:
         with:
           agent-apps: my-agent-app
           token: ${{ secrets.DARZ_TOKEN }}
-      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always()
         with:
           sarif_file: ${{ steps.darz.outputs.sarif }}
@@ -209,7 +209,7 @@ jobs:
           # checks 3, 4 and 6 are unverifiable, and the job still passes.
           agent-apps: my-agent-app
           token: ${{ secrets.DARZ_TOKEN }}
-      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         if: always()
         with:
           sarif_file: ${{ steps.darz.outputs.sarif }}
@@ -232,7 +232,7 @@ jobs:
           # Optional: a token with Administration: read lets Scorecard read
           # more of the branch protection. Without it, the workflow token is used.
           # repo_token: ${{ secrets.SCORECARD_TOKEN }}
-      - uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea
+      - uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
           sarif_file: scorecard.sarif
           category: scorecard

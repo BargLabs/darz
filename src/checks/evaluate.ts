@@ -33,6 +33,7 @@ import {
   matchLogin,
 } from "../identities.js";
 import { type Setting, pullRequestRequired, reviewSetting, statusChecks } from "../protection.js";
+import { MAX_WORKFLOW_READS } from "../workflows.js";
 import { checkLessonsHold } from "./lessons.js";
 import { ReasonList, reason } from "./reasons.js";
 import { CHECK_IDS, CHECK_TITLES, type CheckId, type CheckRow, type CheckStatus } from "./types.js";
@@ -299,6 +300,9 @@ export function checkGateFilesOwned(input: EvalInput, own: Ownership): CheckRow 
       `GitHub reports ${own.ignored.length} CODEOWNERS line(s) as errors. Owners GitHub flags do not count; a line with an invalid owner or pattern is skipped.`,
     );
   }
+  const forge = checksWriteWorkflows(snap);
+  read.push(...forge.read);
+  context.push(...forge.lines);
   const d = decide(fails, unknowns, ORDER_1);
   const details: Record<string, unknown> = {
     codeownersFile: own.codeownersPath,
@@ -306,6 +310,9 @@ export function checkGateFilesOwned(input: EvalInput, own: Ownership): CheckRow 
     probedPaths: [...own.probes.keys()],
     ignoredCodeownersLines: own.ignored,
     candidatesWithoutTestSettings: own.candidatesWithoutTestSettings,
+    workflowSignal: forge.signal,
+    pullRequestWorkflowsWithChecksWrite: forge.signal === "not_computed" ? null : forge.granted,
+    pullRequestWorkflowsUndecided: forge.signal === "not_computed" ? null : forge.undecided,
   };
   return makeRow("gate_files_owned", d.status, d.reasons, read, context, details);
 }
@@ -348,6 +355,98 @@ function lookupWhy(r: ReadResult<AppData> | undefined): string {
   if (!r) return "not read";
   if (r.state === "read") return "no app id in the response";
   return r.status === null ? r.state : `${r.state}, ${r.status}`;
+}
+
+const WORKFLOWS_GRANTED_PREFIX = "Workflows triggered by a pull request that hold checks: write";
+const WORKFLOWS_UNDECIDED_PREFIX = "Workflows whose checks: write grant on a pull request could not be decided";
+
+/** Why a workflow's grant is undecided, as the clause each context line gives. */
+const UNDECIDED_WHY = {
+  unfetched: "the file could not be read",
+  shape: "a value Darz does not read: a block scalar, an alias, a merge key, a tag, a flow value spread over lines, or a value GitHub does not accept",
+  default:
+    "no permissions are set, so the repository's default workflow permissions apply, and GET /repos/{owner}/{repo}/actions/permissions/workflow could not be read (it needs administration access)",
+} as const;
+
+/**
+ * Pull-request workflows that hold `checks: write` (context for check 1). A
+ * workflow whose grant is the repository default is decided by the default
+ * workflow permissions, readable only with admin; without that read it is
+ * undecided, not claimed. A workflow whose file or shape was not read is
+ * undecided too, unless its triggers rule out a pull request. When the
+ * workflows were not all read, a line says so: an empty list is then not a
+ * clean result.
+ */
+function checksWriteWorkflows(snap: Snapshot): {
+  signal: "complete" | "incomplete" | "not_computed";
+  granted: string[];
+  undecided: string[];
+  lines: string[];
+  read: string[];
+} {
+  const w = snap.workflows;
+  if (w.state === "not_read") {
+    return {
+      signal: "not_computed",
+      granted: [],
+      undecided: [],
+      lines: ["The workflow files were not read, because the tree was not read, so pull-request workflows that hold checks: write are not listed."],
+      read: [],
+    };
+  }
+  if (w.state === "over_cap") {
+    return {
+      signal: "not_computed",
+      granted: [],
+      undecided: [],
+      lines: [
+        `The default branch has ${w.count} workflow files, ${w.distinct} distinct; Darz reads at most ${MAX_WORKFLOW_READS}, so pull-request workflows that hold checks: write are not listed.`,
+      ],
+      read: [],
+    };
+  }
+  const def = snap.defaultWorkflowPermissions;
+  const defaultWrites = def.state === "read" ? def.canWrite : null;
+  const granted: string[] = [];
+  const undecided: Record<keyof typeof UNDECIDED_WHY, string[]> = { unfetched: [], shape: [], default: [] };
+  const read = w.results.map((r) => r.endpoint);
+  let usesDefault = false;
+  for (const r of w.results) {
+    if (!r.fetched) {
+      undecided.unfetched.push(r.path);
+      continue;
+    }
+    if (r.pullRequest === false || r.checksWrite === "none") continue;
+    if (r.checksWrite === "default") usesDefault = true;
+    const grants = r.checksWrite === "granted" || (r.checksWrite === "default" && defaultWrites === true);
+    if (r.checksWrite === "default" && defaultWrites === false) continue;
+    if (grants && r.pullRequest === true) granted.push(r.path);
+    else if (r.pullRequest === null || r.checksWrite === "unknown") undecided.shape.push(r.path);
+    else undecided.default.push(r.path);
+  }
+  if (usesDefault && def.state !== "not_read") read.push(def.endpoint);
+  const lines: string[] = [];
+  if (!w.complete) {
+    lines.push(
+      "GitHub truncated the tree, so the workflow files Darz read may not be all of them; the lists of pull-request workflows that hold checks: write may be incomplete.",
+    );
+  }
+  if (granted.length > 0) {
+    lines.push(
+      `${WORKFLOWS_GRANTED_PREFIX}: ${granted.join(", ")}. ` +
+        "If such a workflow runs code a pull request controls, that pull request can post a check run as GitHub Actions without changing a workflow file, so a required check pinned only to GitHub Actions rests on these workflows being reviewed too (check 5). This lists the grant, not whether the workflow runs pull-request code.",
+    );
+  }
+  for (const why of ["unfetched", "shape", "default"] as const) {
+    if (undecided[why].length > 0) lines.push(`${WORKFLOWS_UNDECIDED_PREFIX} (${UNDECIDED_WHY[why]}): ${undecided[why].join(", ")}.`);
+  }
+  return {
+    signal: w.complete ? "complete" : "incomplete",
+    granted,
+    undecided: [...undecided.unfetched, ...undecided.shape, ...undecided.default].sort(),
+    lines,
+    read,
+  };
 }
 
 function andList(items: Array<number | string>): string {
@@ -948,14 +1047,35 @@ function levelOf(c: { permissions?: Record<string, boolean | undefined>; role_na
   return (LEVELS as readonly string[]).includes(r ?? "") ? (r as Level) : null;
 }
 
+/** The checks that together make a pull request's workflow changes reviewed. */
+const WORKFLOW_REVIEW_CHECKS: readonly CheckId[] = ["gate_files_owned", "human_review_required", "writer_not_approver"];
+
+/**
+ * Check 5's context line for checks pinned only to GitHub Actions. `notPassing`
+ * numbers the checks among 1, 2 and 3 that do not pass.
+ */
+function githubActionsPinLine(checks: readonly string[], notPassing: readonly number[]): string {
+  const held =
+    notPassing.length === 0
+      ? "Checks 1, 2 and 3 pass."
+      : `${notPassing.length === 1 ? "Check" : "Checks"} ${andList([...notPassing])} ${notPassing.length === 1 ? "does" : "do"} not pass.`;
+  return (
+    `Required checks pinned only to GitHub Actions (app ${GITHUB_ACTIONS_APP_ID}): ${checks.join(", ")}. ` +
+    "The pin alone does not gate them: a pull request from a branch in this repository can add or change a workflow that holds checks: write and posts a check run with that name as GitHub Actions, and GitHub counts that run. " +
+    `They hold only while workflow changes need review, which is checks 1, 2 and 3. ${held} ` +
+    "Not checked: an existing workflow that holds checks: write and runs code a pull request controls can post the same run without the pull request changing a workflow."
+  );
+}
+
 /**
  * Check 5. A required check only fails closed if a named app must report it:
  * an unpinned check can be satisfied by anyone who can post a status or check
  * run with that name, an agent included. Every required check must be pinned,
  * none to an agent app. A source Darz could not read could pin a check or
  * require another one, so with a source unreadable the row cannot pass.
+ * A check pinned only to GitHub Actions also needs checks 1-3, in `review`.
  */
-export function checkRequiredChecks(input: EvalInput): CheckRow {
+export function checkRequiredChecks(input: EvalInput, review: readonly CheckRow[]): CheckRow {
   const sc = statusChecks(input.snap);
   const fails = new ReasonList();
   const unknowns = new ReasonList();
@@ -980,15 +1100,21 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
     const unpinned = sc.checks.filter((c) => c.appIds.length === 0).map((c) => c.context);
     if (unpinned.length > 0 && !sc.incomplete) fails.add("required_check_unpinned", ...unpinned);
     // GitHub Actions is a platform identity, not an agent, unless declared or
-    // allowed to bypass a ruleset. A check pinned to it passes, but any workflow
-    // with checks: write can post a check run as it; that is not read yet.
+    // allowed to bypass a ruleset. Its pin alone gates nothing: a pull request
+    // can add a workflow that posts the check as GitHub Actions. So a check
+    // pinned only to it holds while checks 1-3 hold. See docs/checks.md, check 5.
     if (!input.identities.some((i) => i.kind === "app" && i.appId === GITHUB_ACTIONS_APP_ID)) {
-      pinnedToGitHubActions.push(...sc.checks.filter((c) => c.appIds.includes(GITHUB_ACTIONS_APP_ID)).map((c) => c.context));
+      pinnedToGitHubActions.push(
+        ...sc.checks.filter((c) => c.appIds.length > 0 && c.appIds.every((id) => id === GITHUB_ACTIONS_APP_ID)).map((c) => c.context),
+      );
     }
     if (pinnedToGitHubActions.length > 0) {
-      context.push(
-        `Required checks pinned to GitHub Actions (app ${GITHUB_ACTIONS_APP_ID}): ${pinnedToGitHubActions.join(", ")}. Any workflow in the repository with checks: write can post a check run with that name as GitHub Actions; whether one can is not checked.`,
+      const notPassing = WORKFLOW_REVIEW_CHECKS.map((id) => [id, review.find((r) => r.id === id)?.status] as const).filter(
+        ([, s]) => s !== "pass",
       );
+      if (notPassing.some(([, s]) => s === "fail")) fails.add("required_check_actions_pin_unreviewed", ...pinnedToGitHubActions);
+      else if (notPassing.length > 0) unknowns.add("required_check_actions_pin_review_unknown", ...pinnedToGitHubActions);
+      context.push(githubActionsPinLine(pinnedToGitHubActions, notPassing.map(([id]) => CHECK_IDS.indexOf(id) + 1)));
     }
     if (sc.incomplete) unknownCauses();
     // A pinned check could be pinned to an agent app that Darz cannot name:
@@ -1004,6 +1130,7 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
     "no_required_checks",
     "required_check_pinned_to_agent_app",
     "required_check_unpinned",
+    "required_check_actions_pin_unreviewed",
     "rules_unreadable",
     "classic_protection_unreadable",
     "field_missing",
@@ -1014,6 +1141,7 @@ export function checkRequiredChecks(input: EvalInput): CheckRow {
     "agent_app_slugs_share_id",
     "config_invalid",
     "config_unreadable",
+    "required_check_actions_pin_review_unknown",
   ]);
   const details = {
     requiredChecks: sc.checks,
@@ -1165,12 +1293,11 @@ export function repositoryUnreadableRows(snap: Snapshot): CheckRow[] {
 export function evaluate(input: EvalInput): CheckRow[] {
   if (!input.snap.repositoryReadable) return repositoryUnreadableRows(input.snap);
   const own = ownership(input);
+  const review = [checkGateFilesOwned(input, own), checkHumanReviewRequired(input), checkWriterNotApprover(input, own)];
   return [
-    checkGateFilesOwned(input, own),
-    checkHumanReviewRequired(input),
-    checkWriterNotApprover(input, own),
+    ...review,
     checkAgentsCannotBypass(input),
-    checkRequiredChecks(input),
+    checkRequiredChecks(input, review),
     checkAgentMerges(input),
     checkLessonsHold(input.lessons, input.identities, input.snap.repoEndpoint),
   ];

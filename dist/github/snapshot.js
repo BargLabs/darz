@@ -2,6 +2,7 @@
 // Copyright 2026 Barg Labs
 import { Buffer } from "node:buffer";
 import { CODEOWNERS_LOCATIONS } from "../codeowners.js";
+import { MAX_WORKFLOW_READS, scanWorkflow } from "../workflows.js";
 import { DARZ_CONFIG_PATH, MAX_CANDIDATE_READS, MAX_MERGE_CANDIDATE_READS, holdsTestSettings, isCandidatePath, isGatePathForChange, } from "../gates.js";
 /**
  * Parse an agent-app declaration from the command line: `slug` or `slug=id`.
@@ -95,6 +96,8 @@ export async function readSnapshot(client, o) {
         collaborators: null,
         merges: { requested: o.merges, pulls: null, merged: [], pageCap: mergePageCap(o.merges) },
         candidates: { state: "not_read" },
+        workflows: { state: "not_read" },
+        defaultWorkflowPermissions: { state: "not_read" },
     };
     const defaultBranch = repo.state === "read" ? repo.data?.default_branch : undefined;
     if (typeof defaultBranch !== "string" || defaultBranch.length === 0)
@@ -126,6 +129,13 @@ export async function readSnapshot(client, o) {
             snap.collaborators = r;
         }),
         readMerges(client, R, defaultBranch, o.merges, snap),
+        client.get(`${R}/actions/permissions/workflow`, "settings").then((r) => {
+            const endpoint = ep(`${R}/actions/permissions/workflow`);
+            const v = r.state === "read" ? r.data?.default_workflow_permissions : undefined;
+            // Only GitHub's two documented values decide; anything else is not a read.
+            snap.defaultWorkflowPermissions =
+                v === "write" || v === "read" ? { state: "read", canWrite: v === "write", endpoint } : { state: "unreadable", endpoint };
+        }),
     ]);
     // A protected branch is protected by rules or by classic protection. If the
     // effective rules were read and there are none, classic protection must
@@ -142,18 +152,16 @@ export async function readSnapshot(client, o) {
 async function readTree(client, R, sha, snap) {
     snap.tree = await client.get(`${R}/git/trees/${sha}?recursive=1`, "content");
     const t = snap.tree.state === "read" ? snap.tree.data : undefined;
-    if (!t || t.truncated !== false || !Array.isArray(t.tree))
+    if (!t || !Array.isArray(t.tree))
         return;
-    const found = t.tree.filter((e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isCandidatePath(e.path));
-    // Files with the same blob have the same content, so each blob is read
-    // once; each path is still judged by its own name.
-    const blobs = new Set(found.map((f) => f.sha));
-    if (blobs.size > MAX_CANDIDATE_READS) {
-        snap.candidates = { state: "over_cap", count: found.length, distinct: blobs.size };
-        return;
-    }
+    // Files with the same blob have the same content, so each blob is read once.
+    const blobs = blobReader(client, R);
+    // Workflows are read from a truncated tree too, marked incomplete; candidates are not.
+    await Promise.all([t.truncated === false ? readCandidates(t, blobs, snap) : undefined, readWorkflows(t, blobs, snap)]);
+}
+function blobReader(client, R) {
     const texts = new Map();
-    const readBlob = (blob) => {
+    return (blob) => {
         let p = texts.get(blob);
         if (!p) {
             const endpoint = `${R}/git/blobs/${blob}`;
@@ -167,6 +175,15 @@ async function readTree(client, R, sha, snap) {
         }
         return p;
     };
+}
+async function readCandidates(t, readBlob, snap) {
+    const found = (t.tree ?? []).filter((e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isCandidatePath(e.path));
+    // Each path is still judged by its own name.
+    const distinct = new Set(found.map((f) => f.sha));
+    if (distinct.size > MAX_CANDIDATE_READS) {
+        snap.candidates = { state: "over_cap", count: found.length, distinct: distinct.size };
+        return;
+    }
     const results = await Promise.all(found.map(async ({ path, sha: blob }) => {
         const { endpoint, text } = await readBlob(blob);
         if (text === null)
@@ -177,6 +194,28 @@ async function readTree(client, R, sha, snap) {
         return { path, state: holds ? "gate" : "not_gate", endpoint: ep(endpoint) };
     }));
     snap.candidates = { state: "read", results: results.sort((a, b) => (a.path < b.path ? -1 : 1)) };
+}
+/** `.github/workflows/*.yml` and `*.yaml`, directly in that directory (GitHub ignores nesting). */
+function isWorkflowPath(path) {
+    return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path);
+}
+async function readWorkflows(t, readBlob, snap) {
+    const found = (t.tree ?? []).filter((e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isWorkflowPath(e.path));
+    const distinct = new Set(found.map((f) => f.sha));
+    if (distinct.size > MAX_WORKFLOW_READS) {
+        snap.workflows = { state: "over_cap", count: found.length, distinct: distinct.size };
+        return;
+    }
+    const results = await Promise.all(found.map(async ({ path, sha: blob }) => {
+        const { endpoint, text } = await readBlob(blob);
+        const scan = text === null ? { pullRequest: null, checksWrite: "unknown" } : scanWorkflow(text);
+        return { path, endpoint: ep(endpoint), fetched: text !== null, ...scan };
+    }));
+    snap.workflows = {
+        state: "read",
+        results: results.sort((a, b) => (a.path < b.path ? -1 : 1)),
+        complete: t.truncated === false,
+    };
 }
 async function readConfig(client, R, sha, snap) {
     const cfgPath = `${R}/contents/${encodePath(DARZ_CONFIG_PATH)}?ref=${sha}`;
