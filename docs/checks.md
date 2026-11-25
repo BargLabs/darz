@@ -144,7 +144,7 @@ Probe names start with `darz-probe-`. If a file with a probe's path exists in th
 
 ## 1. `gate_files_owned`
 
-- **Reads:** the tree at the default branch's head (`GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1`, with that SHA recorded), the CODEOWNERS file in use, `codeowners/errors`, the rules, and classic protection.
+- **Reads:** the tree at the default branch's head (`GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1`, with that SHA recorded), the CODEOWNERS file in use, `codeowners/errors`, the workflow files (for the `checks: write` signal below), the rules, and classic protection.
 - **`pass`:** every gate file and every probe path has at least one owner, and the default branch requires code-owner review.
 - **`fail`:**
   - `gate_files_unowned`, listing the files;
@@ -159,6 +159,13 @@ Probe names start with `darz-probe-`. If a file with a probe's path exists in th
   - `codeowners_error_ambiguous`;
   - `config_invalid` or `config_unreadable`;
   - `rules_unreadable`, `classic_protection_unreadable` or `field_missing`, for the code-owner review setting.
+- **Context — workflows that hold `checks: write`:** Darz reads the workflow files (`.github/workflows/*.yml` and `*.yaml`, each distinct blob once, at most 500) and lists any triggered by `pull_request` or `pull_request_target` that grant `checks: write`, at the workflow level or a job level, or `write-all`. Such a workflow, if it runs code a pull request controls, lets that pull request post a check run as GitHub Actions without changing a workflow file — the path check 5's GitHub Actions note names but does not read. The line lists the grant, not whether the workflow runs pull-request code; it is a signal to review these workflows, never a `fail` or `unverifiable`. `details.pullRequestWorkflowsWithChecksWrite` holds the list and `details.pullRequestWorkflowsUndecided` the undecided ones.
+  - **Shapes read:** `on:` and `permissions:` as a scalar, a block map or list, or a flow map or list written on one line; keys plain, double-quoted or single-quoted (`"on":`); either line ending. An anchor (`&name`) before a value is read through.
+  - **Undecided, with the reason on its own line:**
+    - the file could not be read;
+    - a value Darz does not read: a block scalar, an alias (`*name`), a merge key (`<<`), a tag, a flow value spread over lines, or a value GitHub does not accept. A workflow whose `on:` is such a value is undecided unless it grants nothing;
+    - no permissions are set, so the repository's default workflow permissions apply. Darz resolves this only with an admin read of `GET /repos/{owner}/{repo}/actions/permissions/workflow`: `write` lists the workflow, `read` does not, and anything else, including a response without one of those two values, leaves it undecided.
+  - **`details.workflowSignal`:** `complete`; `incomplete` when GitHub truncated the tree, so the workflow files read may not be all of them (a context line says so); or `not_computed` when the tree was not read or there are more than 500 distinct workflow files. Then both lists are `null` and a context line says why, so an empty list is never mistaken for a clean result.
 
 ## 2. `human_review_required`
 
@@ -288,7 +295,7 @@ The record lists the GraphQL read as one entry, `POST <path>#<query name>`, with
 ## 5. `required_checks_fail_closed`
 
 - **Reads:** the rules and classic protection.
-- **`pass`:** at least one status check is required, every required check is pinned to the app that must report it, and none is pinned to an agent app.
+- **`pass`:** at least one status check is required, every required check is pinned to the app that must report it, and none is pinned to an agent app. A check pinned only to GitHub Actions also needs checks 1, 2 and 3 to pass; see [Pinned to GitHub Actions](#pinned-to-github-actions) below.
   - A required check that is not pinned can be satisfied by anyone who can post a commit status or check run with that name, an agent included. So it does not fail closed.
   - The rules carry the pin as `required_status_checks[].integration_id`; GitHub leaves the field out when any source may report the check.
   - Classic protection carries it as `required_status_checks.checks[].app_id`, which is `null` for any source. A legacy `contexts` list with no `checks` array pins nothing.
@@ -296,10 +303,28 @@ The record lists the GraphQL read as one entry, `POST <path>#<query name>`, with
 - **`fail`:**
   - `no_required_checks`;
   - `required_check_unpinned`, naming the checks;
-  - `required_check_pinned_to_agent_app`, naming the check and the app.
-- **`unverifiable`:** `rules_unreadable`, `classic_protection_unreadable` or `field_missing`. When a required check is pinned to an app, also `no_agent_identities`, `agent_app_unresolved`, `agent_app_id_mismatch`, `agent_app_ids_conflict`, `agent_app_slugs_share_id`, `config_invalid` or `config_unreadable`: the app could be an agent's that Darz cannot name. A source Darz could not read could pin a check or require another one, so with a source unreadable the row is never a pass. An unpinned check is not a fail while a source that could pin it is unreadable.
+  - `required_check_pinned_to_agent_app`, naming the check and the app;
+  - `required_check_actions_pin_unreviewed`, naming the checks pinned only to GitHub Actions, when check 1, 2 or 3 fails.
+- **`unverifiable`:** `rules_unreadable`, `classic_protection_unreadable` or `field_missing`. When a required check is pinned to an app, also `no_agent_identities`, `agent_app_unresolved`, `agent_app_id_mismatch`, `agent_app_ids_conflict`, `agent_app_slugs_share_id`, `config_invalid` or `config_unreadable`: the app could be an agent's that Darz cannot name. A source Darz could not read could pin a check or require another one, so with a source unreadable the row is never a pass. An unpinned check is not a fail while a source that could pin it is unreadable. `required_check_actions_pin_review_unknown` when a check is pinned only to GitHub Actions, none of checks 1, 2 and 3 fails, and one is unverifiable.
 - **Context (`details`):** each required check with the app ids it is pinned to (empty for any source), and whether the branch must be up to date before merging (`true`, `false` or `"unknown"`).
-- **Pinned to GitHub Actions:** unless GitHub Actions is an agent identity (declared, or a ruleset bypass actor), a check pinned to it counts as pinned to a non-agent app. `details.pinnedToGitHubActions` lists such checks, and a context line says what the pin does not stop: any workflow in the repository with `checks: write` can post a check run with that name as GitHub Actions. Whether a workflow can is not checked yet. Whether an agent can change a workflow is what check 1 answers.
+
+### Pinned to GitHub Actions
+
+Unless GitHub Actions is an agent identity (declared, or a ruleset bypass actor), a check pinned to it is pinned to a non-agent app. That pin alone gates nothing. Every workflow's token acts as GitHub Actions, so a workflow that holds `checks: write` can post a check run with the required name, and GitHub counts it.
+
+- **Tested (24 November 2026):** the repository's default workflow permissions were `read`. A pull request from a branch in the same repository added a workflow that declared `checks: write` and posted a successful `test` run without running any tests. The workflow ran from the pull request's branch, its token got `checks: write`, and GitHub marked the required check `test` satisfied. Only the review requirement still blocked the merge.
+- **Not tested: pull requests from forks.** GitHub gives a fork's `pull_request` workflows a read-only token unless the repository is set to send them write tokens, so by default such a workflow cannot post a check run. An agent with no write access to the repository is not covered by the test above.
+- **Not checked: an existing workflow running pull-request code.** A workflow on the default branch that holds `checks: write` and runs code a pull request controls (a test step or a script) can post the same run, and the pull request changes no workflow file. Darz does not read workflow permissions.
+
+So a check pinned only to GitHub Actions holds only while every change to a workflow, or to code a workflow runs, needs review by someone other than the agent. That needs all of:
+
+- check 1: gate files, including `.github/workflows/**` and test settings, have code owners, and code-owner review is required;
+- check 2: an approval is required, stale approvals are dismissed, and the last push needs someone else's approval;
+- check 3: no agent is a code owner of a gate file.
+
+Check 5 reads the results of checks 1, 2 and 3 for these checks. It fails with `required_check_actions_pin_unreviewed` when one of them fails. It is unverifiable with `required_check_actions_pin_review_unknown` when none fails and one is unverifiable. `details.pinnedToGitHubActions` lists the checks, and a context line names them and says which of checks 1, 2 and 3 do not pass.
+
+A check that another source also pins to a different app is not listed: GitHub enforces every source's pin, so a run posted as GitHub Actions does not satisfy the other one. A pin to an agent app still fails with `required_check_pinned_to_agent_app`.
 
 ## 6. `agent_merges_touching_gates`
 
@@ -449,6 +474,8 @@ A reviewer approving a lesson is approving its pattern. Patterns come only from 
 | `no_required_checks` | fail | 5 | No status check is required. |
 | `required_check_unpinned` | fail | 5 | A required check is not pinned to the app that must report it. |
 | `required_check_pinned_to_agent_app` | fail | 5 | A required check is pinned to an agent app. |
+| `required_check_actions_pin_unreviewed` | fail | 5 | A required check is pinned only to GitHub Actions, and check 1, 2 or 3 fails. |
+| `required_check_actions_pin_review_unknown` | unverifiable | 5 | A required check is pinned only to GitHub Actions, and check 1, 2 or 3 is unverifiable. |
 | `gate_candidate_unreadable` | unverifiable | 1, 3 | A candidate file could not be read or parsed. |
 | `gate_candidates_over_cap` | unverifiable | 1, 3 | More than 500 distinct candidate files outside `node_modules`. |
 | `merges_unreadable` | unverifiable | 6 | Merged pull requests could not be read. |

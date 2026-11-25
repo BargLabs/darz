@@ -15,10 +15,15 @@ import { type Fixture, REPO, SHA, b64, blobSha, fileBody, fixtureFetch, goodFixt
 const OWN_GITHUB_ONLY = "/.github/ @alice\n/vitest.config.ts @alice\n";
 const R = `/repos/${REPO}`;
 
+// Check 1 also reads workflow-file blobs for its checks: write signal; those are
+// not candidate reads, so this excludes the one workflow blob these fixtures hold.
+const WORKFLOW_BLOB = `/git/blobs/${blobSha(".github/workflows/ci.yml")}`;
+
 async function run(fx: Fixture): Promise<{ a: Assessment; blobCalls: string[] }> {
   const f = fixtureFetch(fx);
   const a = await assess({ repo: REPO, fetch: f.fetch, agents: ["coder-agent"], now: () => new Date("2026-11-23T12:00:00Z") });
-  return { a, blobCalls: f.calls.map((c) => c.url).filter((u) => u.includes("/git/blobs/")) };
+  const blobCalls = f.calls.map((c) => c.url).filter((u) => u.includes("/git/blobs/") && !u.includes(WORKFLOW_BLOB));
+  return { a, blobCalls };
 }
 
 function row(a: Assessment, id: string): CheckRow {
@@ -95,7 +100,7 @@ describe("candidate reads in large repositories", () => {
     expect((r.reasons.find((x) => x.code === "gate_files_unowned")?.subjects ?? []).length).toBe(500);
     expect((r.details?.candidatesWithoutTestSettings as string[]).length).toBe(500);
     // The record lists each distinct read once.
-    expect(a.reads.filter((e) => e.endpoint.includes("/git/blobs/")).length).toBe(2);
+    expect(a.reads.filter((e) => e.endpoint.includes("/git/blobs/") && !e.endpoint.includes(WORKFLOW_BLOB)).length).toBe(2);
   });
 
   it("one blob under two candidate names is judged by each name", async () => {

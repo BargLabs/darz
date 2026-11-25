@@ -3,6 +3,7 @@
 
 import { Buffer } from "node:buffer";
 import { CODEOWNERS_LOCATIONS } from "../codeowners.js";
+import { MAX_WORKFLOW_READS, type WorkflowScan, scanWorkflow } from "../workflows.js";
 import {
   DARZ_CONFIG_PATH,
   type GateSet,
@@ -81,6 +82,25 @@ export type CandidateState =
   | { state: "over_cap"; count: number; distinct: number }
   | { state: "read"; results: CandidateResult[] };
 
+export interface WorkflowResult extends WorkflowScan {
+  path: string;
+  endpoint: string;
+  /** False when the blob could not be read; then nothing about the workflow is known. */
+  fetched: boolean;
+}
+
+export type WorkflowsState =
+  | { state: "not_read" }
+  | { state: "over_cap"; count: number; distinct: number }
+  /** `complete` is false when GitHub truncated the tree, so some workflow files may not be listed. */
+  | { state: "read"; results: WorkflowResult[]; complete: boolean };
+
+/** The repository's default workflow token permissions (needs admin to read). */
+export type DefaultWorkflowPermissions =
+  | { state: "not_read" }
+  | { state: "unreadable"; endpoint: string }
+  | { state: "read"; canWrite: boolean; endpoint: string };
+
 export type ClassicState =
   | { state: "present"; data: ClassicProtectionData; endpoint: string }
   | { state: "absent"; endpoint: null; why: "branch_not_protected" }
@@ -113,6 +133,8 @@ export interface Snapshot {
     pageCap: number;
   };
   candidates: CandidateState;
+  workflows: WorkflowsState;
+  defaultWorkflowPermissions: DefaultWorkflowPermissions;
 }
 
 export const ep = (path: string) => `GET ${path}`;
@@ -199,6 +221,8 @@ export async function readSnapshot(client: GitHubClient, o: ReadOptions): Promis
     collaborators: null,
     merges: { requested: o.merges, pulls: null, merged: [], pageCap: mergePageCap(o.merges) },
     candidates: { state: "not_read" },
+    workflows: { state: "not_read" },
+    defaultWorkflowPermissions: { state: "not_read" },
   };
   const defaultBranch = repo.state === "read" ? repo.data?.default_branch : undefined;
   if (typeof defaultBranch !== "string" || defaultBranch.length === 0) return snap;
@@ -229,6 +253,13 @@ export async function readSnapshot(client: GitHubClient, o: ReadOptions): Promis
         snap.collaborators = r;
       }),
     readMerges(client, R, defaultBranch, o.merges, snap),
+    client.get<{ default_workflow_permissions?: unknown }>(`${R}/actions/permissions/workflow`, "settings").then((r) => {
+      const endpoint = ep(`${R}/actions/permissions/workflow`);
+      const v = r.state === "read" ? r.data?.default_workflow_permissions : undefined;
+      // Only GitHub's two documented values decide; anything else is not a read.
+      snap.defaultWorkflowPermissions =
+        v === "write" || v === "read" ? { state: "read", canWrite: v === "write", endpoint } : { state: "unreadable", endpoint };
+    }),
   ]);
   // A protected branch is protected by rules or by classic protection. If the
   // effective rules were read and there are none, classic protection must
@@ -248,19 +279,18 @@ export async function readSnapshot(client: GitHubClient, o: ReadOptions): Promis
 async function readTree(client: GitHubClient, R: string, sha: string, snap: Snapshot) {
   snap.tree = await client.get<TreeData>(`${R}/git/trees/${sha}?recursive=1`, "content");
   const t = snap.tree.state === "read" ? snap.tree.data : undefined;
-  if (!t || t.truncated !== false || !Array.isArray(t.tree)) return;
-  const found = t.tree.filter(
-    (e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isCandidatePath(e.path),
-  ) as Array<{ path: string; sha: string }>;
-  // Files with the same blob have the same content, so each blob is read
-  // once; each path is still judged by its own name.
-  const blobs = new Set(found.map((f) => f.sha));
-  if (blobs.size > MAX_CANDIDATE_READS) {
-    snap.candidates = { state: "over_cap", count: found.length, distinct: blobs.size };
-    return;
-  }
+  if (!t || !Array.isArray(t.tree)) return;
+  // Files with the same blob have the same content, so each blob is read once.
+  const blobs = blobReader(client, R);
+  // Workflows are read from a truncated tree too, marked incomplete; candidates are not.
+  await Promise.all([t.truncated === false ? readCandidates(t, blobs, snap) : undefined, readWorkflows(t, blobs, snap)]);
+}
+
+type BlobReader = (blob: string) => Promise<{ endpoint: string; text: string | null }>;
+
+function blobReader(client: GitHubClient, R: string): BlobReader {
   const texts = new Map<string, Promise<{ endpoint: string; text: string | null }>>();
-  const readBlob = (blob: string) => {
+  return (blob) => {
     let p = texts.get(blob);
     if (!p) {
       const endpoint = `${R}/git/blobs/${blob}`;
@@ -275,6 +305,18 @@ async function readTree(client: GitHubClient, R: string, sha: string, snap: Snap
     }
     return p;
   };
+}
+
+async function readCandidates(t: TreeData, readBlob: BlobReader, snap: Snapshot) {
+  const found = (t.tree ?? []).filter(
+    (e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isCandidatePath(e.path),
+  ) as Array<{ path: string; sha: string }>;
+  // Each path is still judged by its own name.
+  const distinct = new Set(found.map((f) => f.sha));
+  if (distinct.size > MAX_CANDIDATE_READS) {
+    snap.candidates = { state: "over_cap", count: found.length, distinct: distinct.size };
+    return;
+  }
   const results = await Promise.all(
     found.map(async ({ path, sha: blob }): Promise<CandidateResult> => {
       const { endpoint, text } = await readBlob(blob);
@@ -285,6 +327,34 @@ async function readTree(client: GitHubClient, R: string, sha: string, snap: Snap
     }),
   );
   snap.candidates = { state: "read", results: results.sort((a, b) => (a.path < b.path ? -1 : 1)) };
+}
+
+/** `.github/workflows/*.yml` and `*.yaml`, directly in that directory (GitHub ignores nesting). */
+function isWorkflowPath(path: string): boolean {
+  return /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path);
+}
+
+async function readWorkflows(t: TreeData, readBlob: BlobReader, snap: Snapshot) {
+  const found = (t.tree ?? []).filter(
+    (e) => e.type === "blob" && typeof e.path === "string" && typeof e.sha === "string" && isWorkflowPath(e.path),
+  ) as Array<{ path: string; sha: string }>;
+  const distinct = new Set(found.map((f) => f.sha));
+  if (distinct.size > MAX_WORKFLOW_READS) {
+    snap.workflows = { state: "over_cap", count: found.length, distinct: distinct.size };
+    return;
+  }
+  const results = await Promise.all(
+    found.map(async ({ path, sha: blob }): Promise<WorkflowResult> => {
+      const { endpoint, text } = await readBlob(blob);
+      const scan: WorkflowScan = text === null ? { pullRequest: null, checksWrite: "unknown" } : scanWorkflow(text);
+      return { path, endpoint: ep(endpoint), fetched: text !== null, ...scan };
+    }),
+  );
+  snap.workflows = {
+    state: "read",
+    results: results.sort((a, b) => (a.path < b.path ? -1 : 1)),
+    complete: t.truncated === false,
+  };
 }
 
 async function readConfig(client: GitHubClient, R: string, sha: string, snap: Snapshot) {
