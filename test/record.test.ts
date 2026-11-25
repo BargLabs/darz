@@ -81,7 +81,7 @@ describe("the record", () => {
     const a = await assess({ repo: REPO, fetch: fixtureFetch(goodFixture()).fetch, agents: ["coder-agent"], now });
     const r = buildRecord(a, { agents: ["coder-agent"], agentApps: [], gates: [], merges: 50 });
     expect(r.format).toBe("darz-record-0.3");
-    expect(r.tool).toEqual({ name: "darz", version: "0.3.0" });
+    expect(r.tool).toEqual({ name: "darz", version: "0.4.0" });
     expect(r.repository).toBe(REPO);
     expect(r.defaultBranch).toBe("main");
     expect(r.commitSha).toMatch(/^[0-9a-f]{40}$/);
